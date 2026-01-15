@@ -1,15 +1,26 @@
 import streamlit as st
 import requests
 import base64
-import google.generativeai as genai
+import json
 
 # 1. SETUP SECRETS
 CID, SEC, GKEY, URI = st.secrets["FITBIT_CLIENT_ID"], st.secrets["FITBIT_CLIENT_SECRET"], st.secrets["GEMINI_API_KEY"], st.secrets["YOUR_SITE_URL"]
 
-# 2. AI CONFIG
-genai.configure(api_key=GKEY)
-# We use 'gemini-1.5-flash' - it's the fastest and most reliable for this
-model = genai.GenerativeModel('gemini-1.5-flash')
+# 2. STABLE AI FUNCTION (Direct v1 Call)
+def ask_ai(ctx, q):
+    # We use the 'v1' stable endpoint to avoid the 404 error
+    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GKEY}"
+    payload = {
+        "contents": [{"parts": [{"text": f"You are a health analyst. Analyze this Fitbit data summary: {ctx}. User Question: {q}"}]}]
+    }
+    try:
+        r = requests.post(url, json=payload, timeout=30)
+        resp = r.json()
+        if "candidates" in resp:
+            return resp["candidates"][0]["content"]["parts"][0]["text"]
+        return f"AI Error: {resp.get('error', {}).get('message', 'Unexpected response format')}"
+    except Exception as e:
+        return f"Connection Error: {e}"
 
 # 3. PAGE SETUP
 st.set_page_config(page_title="Total Health AI", layout="wide")
@@ -31,32 +42,38 @@ if "code" in qp and not st.session_state.tk:
             st.session_state.tk = r["access_token"]
             st.query_params.clear()
             st.rerun()
-    except: st.error("Login failed. Please refresh the page.")
+    except: st.error("Login failed. Refresh and try again.")
 
 # 5. MAIN APP
 if st.session_state.tk:
-    st.sidebar.success("✅ Health Data Linked")
+    st.sidebar.success("✅ Connected")
     if st.sidebar.button("Logout"):
         st.session_state.tk, st.session_state.data, st.session_state.ms = None, None, []
+        st.query_params.clear()
         st.rerun()
 
-    # SYNC DATA
+    # SYNC 1-YEAR DATA
     if not st.session_state.data:
-        if st.button("🔄 Sync 1-Year History"):
-            with st.spinner("Fetching 12 months of records..."):
+        if st.button("🔄 Sync Lifetime History (12 Months)"):
+            with st.spinner("Analyzing 12 months of health records..."):
                 h = {"Authorization": f"Bearer {st.session_state.tk}"}
                 try:
-                    # Fetching 1 year of data
-                    w = requests.get("https://api.fitbit.com/1/user/-/body/weight/date/today/1y.json", headers=h).json().get('body-weight', [])
-                    f = requests.get("https://api.fitbit.com/1/user/-/body/fat/date/today/1y.json", headers=h).json().get('body-fat', [])
-                    s = requests.get("https://api.fitbit.com/1/user/-/activities/steps/date/today/1y.json", headers=h).json().get('activities-steps', [])
+                    # Fetching
+                    steps = requests.get("https://api.fitbit.com/1/user/-/activities/steps/date/today/1y.json", headers=h).json().get('activities-steps', [])
+                    weight = requests.get("https://api.fitbit.com/1/user/-/body/log/weight/date/today/1y.json", headers=h).json().get('weight', [])
+                    sleep = requests.get("https://api.fitbit.com/1.2/user/-/sleep/list.json?afterDate=2020-01-01&limit=50&sort=desc", headers=h).json().get('sleep', [])
                     
-                    # COMPACT THE DATA: AI doesn't need 365 rows. We give it the last 30 days + monthly averages for the rest.
-                    last_30_w = w[-30:]
-                    last_30_s = s[-30:]
+                    # DATA SUMMARIZER: To prevent AI "Busy" errors, we condense the 365 days
+                    # We send the last 14 days of detail + monthly averages for the rest
+                    summary = {
+                        "Last_14_Days_Steps": steps[-14:],
+                        "Last_10_Sleep_Sessions": [{"date": s['dateOfSleep'], "hrs": round(s['minutesAsleep']/60, 1)} for s in sleep[:10]],
+                        "Recent_Weight_Logs": weight[-10:],
+                        "Yearly_Step_Total": sum(int(d['value']) for d in steps)
+                    }
                     
-                    st.session_state.data = f"WEIGHT_30D: {last_30_w}, STEPS_30D: {last_30_s}, FAT_LATEST: {f[-1:] if f else 'N/A'}"
-                    st.success("Synced!")
+                    st.session_state.data = str(summary)
+                    st.success("12 Months of data condensed and ready!")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Sync failed: {e}")
@@ -66,19 +83,15 @@ if st.session_state.tk:
         for m in st.session_state.ms:
             with st.chat_message(m["role"]): st.markdown(m["content"])
             
-        if p := st.chat_input("Ask me about your health..."):
+        if p := st.chat_input("Ask about your long-term trends..."):
             st.session_state.ms.append({"role": "user", "content": p})
             with st.chat_message("user"): st.markdown(p)
             with st.chat_message("assistant"):
-                try:
-                    prompt = f"You are a health expert. Based on this Fitbit data: {st.session_state.data}. Answer this: {p}"
-                    response = model.generate_content(prompt)
-                    st.markdown(response.text)
-                    st.session_state.ms.append({"role": "assistant", "content": response.text})
-                except Exception as ai_err:
-                    st.error(f"AI Error: {ai_err}")
+                with st.spinner("AI is analyzing your history..."):
+                    ans = ask_ai(st.session_state.data, p)
+                    st.markdown(ans)
+                    st.session_state.ms.append({"role": "assistant", "content": ans})
 
-# 6. LOGIN LINK
 else:
     url = f"https://www.fitbit.com/oauth2/authorize?response_type=code&client_id={CID}&scope=activity%20heartrate%20nutrition%20profile%20sleep%20weight&redirect_uri={URI}"
     st.markdown(f"### [🔗 Connect Fitbit]({url})")
