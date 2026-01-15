@@ -8,8 +8,8 @@ CID, SEC, GKEY, URI = st.secrets["FITBIT_CLIENT_ID"], st.secrets["FITBIT_CLIENT_
 
 # 2. THE SCIENTIST AI FUNCTION (With Safety Overrides)
 def ask_ai(master_table, sleep_data, user_query):
-    # Using v1 API (more stable and supported)
-    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GKEY}"
+    # Using v1beta with the correct model name
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GKEY}"
     
     prompt = f"""
     You are a professional health data scientist. 
