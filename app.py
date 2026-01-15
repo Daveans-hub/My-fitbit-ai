@@ -6,45 +6,64 @@ import json
 # 1. LOAD SECRETS
 CID, SEC, GKEY, URI = st.secrets["FITBIT_CLIENT_ID"], st.secrets["FITBIT_CLIENT_SECRET"], st.secrets["GEMINI_API_KEY"], st.secrets["YOUR_SITE_URL"]
 
-# 2. OPTIMIZED AI FUNCTION
+# 2. THE SCIENTIST AI FUNCTION (With Safety Overrides)
 def ask_ai(master_table, sleep_data, user_query):
+    # Using v1beta for direct access to safety threshold overrides
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GKEY}"
+    
+    prompt = f"""
+    You are a professional health data scientist. 
+    Analyze the following 12-month dataset for correlations and regressions.
+    
+    DATA (Date, Steps, Weight, Fat%, CaloriesIn, CaloriesOut):
+    {master_table}
+    
+    SLEEP HISTORY:
+    {sleep_data}
+    
+    USER QUESTION: {user_query}
+    
+    OUTPUT: Provide a statistical analysis. If a correlation is weak, say so. 
+    Focus on patterns between activity, sleep, and weight.
+    """
+    
+    # These settings prevent Google from blocking health-related data
+    safety_settings = [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+    ]
+    
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "safetySettings": safety_settings
+    }
+    
     try:
-        # Increase timeout to 60s for heavy analysis
-        url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GKEY}"
-        
-        prompt = f"""
-        You are a health data scientist. Use the following 12-month data table to perform correlations, 
-        regressions, and trend analysis. Newest dates are at the top.
-        
-        DATA TABLE (Date, Steps, Weight, Fat%, CalIn, CalOut):
-        {master_table}
-        
-        RECENT SLEEP LOGS:
-        {sleep_data}
-        
-        USER QUESTION: {user_query}
-        
-        INSTRUCTIONS: 
-        - Look for statistical links (e.g., 'When steps increase, weight follows X trend').
-        - If 'Calories In' is 0, ignore that specific day for nutrition analysis.
-        - Be precise and professional.
-        """
-        
-        payload = {"contents": [{"parts": [{"text": prompt}]}]}
         res = requests.post(url, json=payload, timeout=60)
-        return res.json()["candidates"][0]["content"]["parts"][0]["text"]
+        data = res.json()
+        
+        if "candidates" in data and len(data["candidates"]) > 0:
+            return data["candidates"][0]["content"]["parts"][0]["text"]
+        elif "error" in data:
+            return f"Google API Error: {data['error']['message']}"
+        else:
+            # This will show us if it was blocked for 'Safety'
+            return f"AI Refusal. Data received: {json.dumps(data)[:500]}"
+            
     except Exception as e:
-        return f"AI Analysis Snag: {str(e)}"
+        return f"System Error: {str(e)}"
 
 # 3. PAGE SETUP
 st.set_page_config(page_title="Health Data Scientist", layout="wide")
-st.title("🔬 Lifetime Correlation & Regression AI")
+st.title("🔬 Lifetime Health Analyst")
 
 if "tk" not in st.session_state: st.session_state.tk = None
 if "ms" not in st.session_state: st.session_state.ms = []
 if "master_data" not in st.session_state: st.session_state.master_data = None
 
-# 4. LOGIN LOGIC
+# 4. LOGIN
 qp = st.query_params
 if "code" in qp and not st.session_state.tk:
     try:
@@ -64,63 +83,51 @@ if st.session_state.tk:
         st.session_state.tk, st.session_state.master_data, st.session_state.ms = None, None, []
         st.rerun()
 
-    # THE MASTER SYNC (12 Months of Raw Data)
     if not st.session_state.master_data:
-        if st.button("🔄 Perform Full 12-Month Data Sync"):
-            with st.spinner("Building your lifetime health table..."):
+        if st.button("🔄 Sync 12-Month Master Table"):
+            with st.spinner("Processing 12 months of data..."):
                 h = {"Authorization": f"Bearer {st.session_state.tk}"}
                 try:
-                    # 1. Fetch 1 year for all 5 major metrics
-                    s_raw = requests.get("https://api.fitbit.com/1/user/-/activities/steps/date/today/1y.json", headers=h).json().get('activities-steps', [])
-                    w_raw = requests.get("https://api.fitbit.com/1/user/-/body/weight/date/today/1y.json", headers=h).json().get('body-weight', [])
-                    f_raw = requests.get("https://api.fitbit.com/1/user/-/body/fat/date/today/1y.json", headers=h).json().get('body-fat', [])
-                    co_raw = requests.get("https://api.fitbit.com/1/user/-/activities/calories/date/today/1y.json", headers=h).json().get('activities-calories', [])
-                    ci_raw = requests.get("https://api.fitbit.com/1/user/-/foods/log/caloriesIn/date/today/1y.json", headers=h).json().get('foods-log-caloriesIn', [])
-                    slp = requests.get("https://api.fitbit.com/1.2/user/-/sleep/list.json?afterDate=2024-01-01&limit=50&sort=desc", headers=h).json().get('sleep', [])
+                    s = requests.get("https://api.fitbit.com/1/user/-/activities/steps/date/today/1y.json", headers=h).json().get('activities-steps', [])
+                    w = requests.get("https://api.fitbit.com/1/user/-/body/weight/date/today/1y.json", headers=h).json().get('body-weight', [])
+                    f = requests.get("https://api.fitbit.com/1/user/-/body/fat/date/today/1y.json", headers=h).json().get('body-fat', [])
+                    co = requests.get("https://api.fitbit.com/1/user/-/activities/calories/date/today/1y.json", headers=h).json().get('activities-calories', [])
+                    ci = requests.get("https://api.fitbit.com/1/user/-/foods/log/caloriesIn/date/today/1y.json", headers=h).json().get('foods-log-caloriesIn', [])
+                    sl = requests.get("https://api.fitbit.com/1.2/user/-/sleep/list.json?afterDate=2024-01-01&limit=20&sort=desc", headers=h).json().get('sleep', [])
 
-                    # 2. Align data by date into a compact Master Table
-                    master_dict = {}
-                    for item in s_raw: master_dict[item['dateTime']] = [item['value'], "0", "0", "0", "0"] # Steps, Weight, Fat, CalIn, CalOut
-                    for item in w_raw: 
-                        if item['dateTime'] in master_dict: master_dict[item['dateTime']][1] = item['value']
-                    for item in f_raw: 
-                        if item['dateTime'] in master_dict: master_dict[item['dateTime']][2] = item['value']
-                    for item in ci_raw: 
-                        if item['dateTime'] in master_dict: master_dict[item['dateTime']][3] = item['value']
-                    for item in co_raw: 
-                        if item['dateTime'] in master_dict: master_dict[item['dateTime']][4] = item['value']
+                    master = {}
+                    for i in s: master[i['dateTime']] = [i['value'], "0", "0", "0", "0"]
+                    for i in w: 
+                        if i['dateTime'] in master: master[i['dateTime']][1] = i['value']
+                    for i in f: 
+                        if i['dateTime'] in master: master[i['dateTime']][2] = i['value']
+                    for i in ci: 
+                        if i['dateTime'] in master: master[i['dateTime']][3] = i['value']
+                    for i in co: 
+                        if i['dateTime'] in master: master[i['dateTime']][4] = i['value']
 
-                    # 3. Create a clean CSV-style string (Most recent first)
-                    table_rows = ["Date,Steps,Wgt,Fat%,In,Out"]
-                    dates_sorted = sorted(master_dict.keys(), reverse=True)
-                    for d in dates_sorted:
-                        v = master_dict[d]
-                        table_rows.append(f"{d},{v[0]},{v[1]},{v[2]},{v[3]},{v[4]}")
+                    rows = ["Date,Steps,Wgt,Fat%,In,Out"]
+                    for d in sorted(master.keys(), reverse=True):
+                        v = master[d]
+                        rows.append(f"{d},{v[0]},{v[1]},{v[2]},{v[3]},{v[4]}")
                     
-                    sleep_summary = [{"date": s['dateOfSleep'], "hrs": round(s['minutesAsleep']/60, 1)} for s in slp]
-
-                    st.session_state.master_data = {"table": "\n".join(table_rows), "sleep": sleep_summary}
-                    st.success("Sync Complete! 12 months of daily data aligned.")
+                    sleep_txt = [{"d": x['dateOfSleep'], "h": round(x['minutesAsleep']/60, 1)} for x in sl]
+                    st.session_state.master_data = {"table": "\n".join(rows), "sleep": sleep_txt}
                     st.rerun()
-                except Exception as e:
-                    st.error(f"Sync failed: {e}")
+                except Exception as e: st.error(f"Sync failed: {e}")
 
-    # CHAT UI
     if st.session_state.master_data:
         for m in st.session_state.ms:
             with st.chat_message(m["role"]): st.markdown(m["content"])
             
-        if p := st.chat_input("Perform correlation (e.g. 'What is the correlation between my steps and weight loss?')"):
+        if p := st.chat_input("Ask for a regression or correlation..."):
             st.session_state.ms.append({"role": "user", "content": p})
             with st.chat_message("user"): st.markdown(p)
             with st.chat_message("assistant"):
-                with st.spinner("Running statistical analysis..."):
+                with st.spinner("Analyzing..."):
                     ans = ask_ai(st.session_state.master_data["table"], st.session_state.master_data["sleep"], p)
                     st.markdown(ans)
                     st.session_state.ms.append({"role": "assistant", "content": ans})
-        
-        with st.expander("View the 12-Month Master Table aligned for AI"):
-            st.text(st.session_state.master_data["table"])
 
 else:
     url = f"https://www.fitbit.com/oauth2/authorize?response_type=code&client_id={CID}&scope=activity%20heartrate%20nutrition%20profile%20sleep%20weight&redirect_uri={URI}"
