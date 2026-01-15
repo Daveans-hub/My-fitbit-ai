@@ -6,51 +6,58 @@ import json
 # 1. LOAD SECRETS
 CID, SEC, GKEY, URI = st.secrets["FITBIT_CLIENT_ID"], st.secrets["FITBIT_CLIENT_SECRET"], st.secrets["GEMINI_API_KEY"], st.secrets["YOUR_SITE_URL"]
 
-# 2. THE SCIENTIST AI FUNCTION (With Safety Overrides)
+# 2. THE SELF-CORRECTING AI FUNCTION
 def ask_ai(master_table, sleep_data, user_query):
-    # Using v1beta with the correct model name
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GKEY}"
-    
-    prompt = f"""
-    You are a professional health data scientist. 
-    Analyze the following 12-month dataset for correlations and regressions.
-    
-    DATA (Date, Steps, Weight, Fat%, CaloriesIn, CaloriesOut):
-    {master_table}
-    
-    SLEEP HISTORY:
-    {sleep_data}
-    
-    USER QUESTION: {user_query}
-    
-    OUTPUT: Provide a statistical analysis. If a correlation is weak, say so. 
-    Focus on patterns between activity, sleep, and weight.
-    """
-    
-    # These settings prevent Google from blocking health-related data
-    safety_settings = [
-        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-    ]
-    
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "safetySettings": safety_settings
-    }
-    
     try:
-        res = requests.post(url, json=payload, timeout=60)
-        data = res.json()
+        # STEP A: Discovery - Ask Google what models this key can actually use
+        list_url = f"https://generativelanguage.googleapis.com/v1/models?key={GKEY}"
+        model_list = requests.get(list_url).json()
         
-        if "candidates" in data and len(data["candidates"]) > 0:
-            return data["candidates"][0]["content"]["parts"][0]["text"]
-        elif "error" in data:
-            return f"Google API Error: {data['error']['message']}"
-        else:
-            # This will show us if it was blocked for 'Safety'
-            return f"AI Refusal. Data received: {json.dumps(data)[:500]}"
+        # Find all models that support generating content
+        valid_models = [
+            m['name'] for m in model_list.get('models', []) 
+            if 'generateContent' in m.get('supportedGenerationMethods', [])
+        ]
+        
+        if not valid_models:
+            return "AI Error: No usable models found for this API key. Check Google AI Studio."
+
+        # STEP B: Selection - Prefer 1.5-flash, then 2.0-flash, then pro, otherwise take first
+        # We use the full name provided by Google (e.g. 'models/gemini-1.5-flash')
+        selected_model = next((m for m in valid_models if "1.5-flash" in m), 
+                         next((m for m in valid_models if "2.0-flash" in m),
+                         next((m for m in valid_models if "gemini-pro" in m), valid_models[0])))
+
+        # STEP C: Execution - Use the stable v1 endpoint with the discovered name
+        gen_url = f"https://generativelanguage.googleapis.com/v1/{selected_model}:generateContent?key={GKEY}"
+        
+        prompt = f"""
+        You are a health data scientist. Use the following 12-month dataset for correlations and regressions.
+        
+        DATA (Date, Steps, Weight, Fat%, CaloriesIn, CaloriesOut):
+        {master_table}
+        
+        SLEEP HISTORY (Last 20 sessions):
+        {sleep_data}
+        
+        USER QUESTION: {user_query}
+        
+        INSTRUCTIONS: 
+        - Provide statistical analysis (correlations/regressions).
+        - If Weight or CaloriesIn are '0', ignore those specific dates for trends.
+        """
+        
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "safetySettings": [{"category": c, "threshold": "BLOCK_NONE"} for c in ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]]
+        }
+        
+        res = requests.post(gen_url, json=payload, timeout=60)
+        res_json = res.json()
+        
+        if "candidates" in res_json:
+            return res_json["candidates"][0]["content"]["parts"][0]["text"]
+        return f"AI Error: {res_json}"
             
     except Exception as e:
         return f"System Error: {str(e)}"
@@ -71,9 +78,10 @@ if "code" in qp and not st.session_state.tk:
         r = requests.post("https://api.fitbit.com/oauth2/token", 
             headers={"Authorization": f"Basic {auth_b}", "Content-Type": "application/x-www-form-urlencoded"},
             data={"grant_type": "authorization_code", "code": qp["code"], "redirect_uri": URI}).json()
-        st.session_state.tk = r.get("access_token")
-        st.query_params.clear()
-        st.rerun()
+        if "access_token" in r:
+            st.session_state.tk = r["access_token"]
+            st.query_params.clear()
+            st.rerun()
     except: st.error("Login failed.")
 
 # 5. MAIN APP
@@ -81,11 +89,12 @@ if st.session_state.tk:
     st.sidebar.success("✅ Linked")
     if st.sidebar.button("Logout / Reset"):
         st.session_state.tk, st.session_state.master_data, st.session_state.ms = None, None, []
+        st.query_params.clear()
         st.rerun()
 
     if not st.session_state.master_data:
         if st.button("🔄 Sync 12-Month Master Table"):
-            with st.spinner("Processing 12 months of data..."):
+            with st.spinner("Processing 12 months of health records..."):
                 h = {"Authorization": f"Bearer {st.session_state.tk}"}
                 try:
                     s = requests.get("https://api.fitbit.com/1/user/-/activities/steps/date/today/1y.json", headers=h).json().get('activities-steps', [])
@@ -113,6 +122,7 @@ if st.session_state.tk:
                     
                     sleep_txt = [{"d": x['dateOfSleep'], "h": round(x['minutesAsleep']/60, 1)} for x in sl]
                     st.session_state.master_data = {"table": "\n".join(rows), "sleep": sleep_txt}
+                    st.success("Synced 365 days of data!")
                     st.rerun()
                 except Exception as e: st.error(f"Sync failed: {e}")
 
@@ -120,11 +130,11 @@ if st.session_state.tk:
         for m in st.session_state.ms:
             with st.chat_message(m["role"]): st.markdown(m["content"])
             
-        if p := st.chat_input("Ask for a regression or correlation..."):
+        if p := st.chat_input("Perform analysis (e.g. 'What is the correlation between steps and weight?')"):
             st.session_state.ms.append({"role": "user", "content": p})
             with st.chat_message("user"): st.markdown(p)
             with st.chat_message("assistant"):
-                with st.spinner("Analyzing..."):
+                with st.spinner("Analyzing lifetime data..."):
                     ans = ask_ai(st.session_state.master_data["table"], st.session_state.master_data["sleep"], p)
                     st.markdown(ans)
                     st.session_state.ms.append({"role": "assistant", "content": ans})
@@ -133,4 +143,4 @@ else:
     url = f"https://www.fitbit.com/oauth2/authorize?response_type=code&client_id={CID}&scope=activity%20heartrate%20nutrition%20profile%20sleep%20weight&redirect_uri={URI}"
     st.markdown(f"### [🔗 Connect Fitbit]({url})")
 
-# END OF CODE
+# --- END OF APP ---
