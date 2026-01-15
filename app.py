@@ -14,7 +14,7 @@ genai.configure(api_key=GEMINI_KEY)
 
 # --- RESILIENT AI FUNCTION ---
 def ask_ai(data_context, user_question):
-    # Fallback names to handle different server versions
+    # Try different model names to bypass cloud 404 errors
     model_names = [
         'gemini-1.5-flash-latest', 
         'gemini-1.5-flash', 
@@ -35,5 +35,18 @@ def ask_ai(data_context, user_question):
             
     return f"AI Error: Could not connect to models. Details: {error_log}"
 
+# --- PAGE SETUP ---
 st.set_page_config(page_title="Fitbit AI Assistant", layout="wide")
-st.title("🏃
+st.title("🏃 My Personal Health AI")
+
+if "access_token" not in st.session_state:
+    st.session_state.access_token = None
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# --- AUTH LOGIC ---
+code = st.query_params.get("code")
+
+if not st.session_state.access_token and not code:
+    scope = "activity%20heartrate%20profile%20sleep%20weight%20nutrition"
+    a
