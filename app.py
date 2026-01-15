@@ -3,33 +3,71 @@ import requests
 import base64
 import json
 
-# --- SETTINGS ---
-C_ID = st.secrets["FITBIT_CLIENT_ID"]
-C_SEC = st.secrets["FITBIT_CLIENT_SECRET"]
-G_KEY = st.secrets["GEMINI_API_KEY"]
-R_URI = st.secrets["YOUR_SITE_URL"] 
+# 1. LOAD SECRETS
+CID = st.secrets["FITBIT_CLIENT_ID"]
+SEC = st.secrets["FITBIT_CLIENT_SECRET"]
+GKEY = st.secrets["GEMINI_API_KEY"]
+URI = st.secrets["YOUR_SITE_URL"]
 
-# --- AI FUNCTION ---
-def ask_gemini(context, question):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={G_KEY}"
-    prompt = f"You are a health AI. Context: {context}. Question: {question}"
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+# 2. AI FUNCTION (Direct call to avoid 404 errors)
+def ask_ai(txt, q):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GKEY}"
+    payload = {"contents": [{"parts": [{"text": f"Data: {txt}. Question: {q}"}]}]}
     try:
-        res = requests.post(url, headers={'Content-Type': 'application/json'}, data=json.dumps(payload))
-        out = res.json()
-        return out["candidates"][0]["content"]["parts"][0]["text"]
+        res = requests.post(url, json=payload)
+        return res.json()["candidates"][0]["content"]["parts"][0]["text"]
     except:
-        return "AI is having trouble thinking. Check your Gemini API Key."
+        return "AI Error. Check your Gemini Key in Secrets."
 
-# --- PAGE SETUP ---
-st.set_page_config(page_title="Health AI", layout="wide")
+# 3. PAGE SETUP
+st.set_page_config(page_title="Health AI")
 st.title("🏃 My Personal Health AI")
 
-if "token" not in st.session_state: st.session_state.token = None
-if "msgs" not in st.session_state: st.session_state.msgs = []
+if "tk" not in st.session_state: st.session_state.tk = None
+if "ms" not in st.session_state: st.session_state.ms = []
 
-# --- LOGIN ---
+# 4. LOGIN LOGIC
 code = st.query_params.get("code")
 
-if not st.session_state.token and not code:
-    url = f"https://www.fitb
+if not st.session_state.tk and not code:
+    link = f"https://www.fitbit.com/oauth2/authorize?response_type=code&client_id={CID}&scope=activity%20heartrate%20profile%20sleep%20weight&redirect_uri={URI}"
+    st.markdown(f"### [🔗 Click here to Connect Fitbit]({link})")
+
+elif code and not st.session_state.tk:
+    try:
+        auth = base64.b64encode(f"{CID}:{SEC}".encode()).decode()
+        r = requests.post("https://api.fitbit.com/oauth2/token", 
+            headers={"Authorization": f"Basic {auth}", "Content-Type": "application/x-www-form-urlencoded"},
+            data={"grant_type": "authorization_code", "code": code, "redirect_uri": URI}).json()
+        if "access_token" in r:
+            st.session_state.tk = r["access_token"]
+            st.query_params.clear()
+            st.rerun()
+    except: st.error("Login failed.")
+
+# 5. MAIN APP
+if st.session_state.tk:
+    st.sidebar.success("✅ Connected")
+    if st.sidebar.button("Logout"):
+        st.session_state.tk = None
+        st.session_state.ms = []
+        st.rerun()
+
+    hdr = {"Authorization": f"Bearer {st.session_state.tk}"}
+    try:
+        slp = requests.get("https://api.fitbit.com/1.2/user/-/sleep/list.json?afterDate=2024-01-01&limit=5", headers=hdr).json()
+        stp = requests.get("https://api.fitbit.com/1/user/-/activities/steps/date/today/7d.json", headers=hdr).json()
+        ctx = f"Sleep: {slp}, Steps: {stp}"
+    except: ctx = "No data"
+
+    for m in st.session_state.ms:
+        with st.chat_message(m["role"]): st.markdown(m["content"])
+
+    if p := st.chat_input("Ask me something..."):
+        st.session_state.ms.append({"role": "user", "content": p})
+        with st.chat_message("user"): st.markdown(p)
+        with st.chat_message("assistant"):
+            ans = ask_ai(ctx, p)
+            st.markdown(ans)
+            st.session_state.ms.append({"role": "assistant", "content": ans})
+# END OF CODE
