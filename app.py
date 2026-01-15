@@ -6,105 +6,124 @@ import json
 # 1. LOAD SECRETS
 CID, SEC, GKEY, URI = st.secrets["FITBIT_CLIENT_ID"], st.secrets["FITBIT_CLIENT_SECRET"], st.secrets["GEMINI_API_KEY"], st.secrets["YOUR_SITE_URL"]
 
-# 2. THE AI FUNCTION
-def ask_ai_dynamic(data_summary, user_query):
+# 2. OPTIMIZED AI FUNCTION
+def ask_ai(master_table, sleep_data, user_query):
     try:
-        model_list_url = f"https://generativelanguage.googleapis.com/v1/models?key={GKEY}"
-        model_data = requests.get(model_list_url).json()
-        available = [m["name"] for m in model_data.get("models", []) if "generateContent" in m.get("supportedGenerationMethods", [])]
-        if not available: return "AI Error: Key has no model access."
-        selected_model = next((m for m in available if "1.5-flash" in m), available[0])
+        # Increase timeout to 60s for heavy analysis
+        url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GKEY}"
         
-        gen_url = f"https://generativelanguage.googleapis.com/v1/{selected_model}:generateContent?key={GKEY}"
-        prompt = f"You are a professional health analyst. Analyze this 1-year Fitbit summary: {data_summary}. User Question: {user_query}."
+        prompt = f"""
+        You are a health data scientist. Use the following 12-month data table to perform correlations, 
+        regressions, and trend analysis. Newest dates are at the top.
+        
+        DATA TABLE (Date, Steps, Weight, Fat%, CalIn, CalOut):
+        {master_table}
+        
+        RECENT SLEEP LOGS:
+        {sleep_data}
+        
+        USER QUESTION: {user_query}
+        
+        INSTRUCTIONS: 
+        - Look for statistical links (e.g., 'When steps increase, weight follows X trend').
+        - If 'Calories In' is 0, ignore that specific day for nutrition analysis.
+        - Be precise and professional.
+        """
         
         payload = {"contents": [{"parts": [{"text": prompt}]}]}
-        res = requests.post(gen_url, json=payload, timeout=30)
+        res = requests.post(url, json=payload, timeout=60)
         return res.json()["candidates"][0]["content"]["parts"][0]["text"]
     except Exception as e:
-        return f"AI Snag: {str(e)}"
+        return f"AI Analysis Snag: {str(e)}"
 
 # 3. PAGE SETUP
-st.set_page_config(page_title="Total Health AI", layout="wide")
-st.title("🏃 Total Health AI Analyst")
+st.set_page_config(page_title="Health Data Scientist", layout="wide")
+st.title("🔬 Lifetime Correlation & Regression AI")
 
 if "tk" not in st.session_state: st.session_state.tk = None
 if "ms" not in st.session_state: st.session_state.ms = []
-if "health_data" not in st.session_state: st.session_state.health_data = None
+if "master_data" not in st.session_state: st.session_state.master_data = None
 
 # 4. LOGIN LOGIC
 qp = st.query_params
 if "code" in qp and not st.session_state.tk:
     try:
-        auth_b64 = base64.b64encode(f"{CID}:{SEC}".encode()).decode()
+        auth_b = base64.b64encode(f"{CID}:{SEC}".encode()).decode()
         r = requests.post("https://api.fitbit.com/oauth2/token", 
-            headers={"Authorization": f"Basic {auth_b64}", "Content-Type": "application/x-www-form-urlencoded"},
+            headers={"Authorization": f"Basic {auth_b}", "Content-Type": "application/x-www-form-urlencoded"},
             data={"grant_type": "authorization_code", "code": qp["code"], "redirect_uri": URI}).json()
-        if "access_token" in r:
-            st.session_state.tk = r["access_token"]
-            st.query_params.clear()
-            st.rerun()
-    except: st.error("Login failed. Please refresh.")
+        st.session_state.tk = r.get("access_token")
+        st.query_params.clear()
+        st.rerun()
+    except: st.error("Login failed.")
 
 # 5. MAIN APP
 if st.session_state.tk:
     st.sidebar.success("✅ Linked")
-    if st.sidebar.button("Logout / Re-Sync"):
-        st.session_state.tk, st.session_state.health_data, st.session_state.ms = None, None, []
-        st.query_params.clear()
+    if st.sidebar.button("Logout / Reset"):
+        st.session_state.tk, st.session_state.master_data, st.session_state.ms = None, None, []
         st.rerun()
 
-    # THE "TOTAL SYNC" (Now including Calories In)
-    if not st.session_state.health_data:
-        if st.button("🔄 Sync All Health Data (12 Months)"):
-            with st.spinner("Fetching full history including Nutrition..."):
+    # THE MASTER SYNC (12 Months of Raw Data)
+    if not st.session_state.master_data:
+        if st.button("🔄 Perform Full 12-Month Data Sync"):
+            with st.spinner("Building your lifetime health table..."):
                 h = {"Authorization": f"Bearer {st.session_state.tk}"}
                 try:
-                    # Pull all metrics
-                    w = requests.get("https://api.fitbit.com/1/user/-/body/weight/date/today/1y.json", headers=h).json().get('body-weight', [])
-                    f = requests.get("https://api.fitbit.com/1/user/-/body/fat/date/today/1y.json", headers=h).json().get('body-fat', [])
-                    s = requests.get("https://api.fitbit.com/1/user/-/activities/steps/date/today/1y.json", headers=h).json().get('activities-steps', [])
-                    cout = requests.get("https://api.fitbit.com/1/user/-/activities/calories/date/today/1y.json", headers=h).json().get('activities-calories', [])
-                    # NEW: Calories In (Nutrition)
-                    cin = requests.get("https://api.fitbit.com/1/user/-/foods/log/caloriesIn/date/today/1y.json", headers=h).json().get('foods-log-caloriesIn', [])
-                    sl = requests.get("https://api.fitbit.com/1.2/user/-/sleep/list.json?afterDate=2024-01-01&limit=20&sort=desc", headers=h).json().get('sleep', [])
+                    # 1. Fetch 1 year for all 5 major metrics
+                    s_raw = requests.get("https://api.fitbit.com/1/user/-/activities/steps/date/today/1y.json", headers=h).json().get('activities-steps', [])
+                    w_raw = requests.get("https://api.fitbit.com/1/user/-/body/weight/date/today/1y.json", headers=h).json().get('body-weight', [])
+                    f_raw = requests.get("https://api.fitbit.com/1/user/-/body/fat/date/today/1y.json", headers=h).json().get('body-fat', [])
+                    co_raw = requests.get("https://api.fitbit.com/1/user/-/activities/calories/date/today/1y.json", headers=h).json().get('activities-calories', [])
+                    ci_raw = requests.get("https://api.fitbit.com/1/user/-/foods/log/caloriesIn/date/today/1y.json", headers=h).json().get('foods-log-caloriesIn', [])
+                    slp = requests.get("https://api.fitbit.com/1.2/user/-/sleep/list.json?afterDate=2024-01-01&limit=50&sort=desc", headers=h).json().get('sleep', [])
+
+                    # 2. Align data by date into a compact Master Table
+                    master_dict = {}
+                    for item in s_raw: master_dict[item['dateTime']] = [item['value'], "0", "0", "0", "0"] # Steps, Weight, Fat, CalIn, CalOut
+                    for item in w_raw: 
+                        if item['dateTime'] in master_dict: master_dict[item['dateTime']][1] = item['value']
+                    for item in f_raw: 
+                        if item['dateTime'] in master_dict: master_dict[item['dateTime']][2] = item['value']
+                    for item in ci_raw: 
+                        if item['dateTime'] in master_dict: master_dict[item['dateTime']][3] = item['value']
+                    for item in co_raw: 
+                        if item['dateTime'] in master_dict: master_dict[item['dateTime']][4] = item['value']
+
+                    # 3. Create a clean CSV-style string (Most recent first)
+                    table_rows = ["Date,Steps,Wgt,Fat%,In,Out"]
+                    dates_sorted = sorted(master_dict.keys(), reverse=True)
+                    for d in dates_sorted:
+                        v = master_dict[d]
+                        table_rows.append(f"{d},{v[0]},{v[1]},{v[2]},{v[3]},{v[4]}")
                     
-                    # Reverse all for "Today First" viewing
-                    w.reverse(); f.reverse(); s.reverse(); cout.reverse(); cin.reverse()
-                    
-                    summary = {
-                        "DAILY_RECENT_TRENDS": {
-                            "Weight": w[:14], 
-                            "Steps": s[:14], 
-                            "Calories_Burned": cout[:14], 
-                            "Calories_Consumed_In": cin[:14]
-                        },
-                        "SLEEP_LAST_20": [{"date": i['dateOfSleep'], "hrs": round(i['minutesAsleep']/60, 1)} for i in sl],
-                        "FAT_PERCENT_LATEST": f[:5]
-                    }
-                    st.session_state.health_data = str(summary)
-                    st.success("Total Health History (including Nutrition) Loaded!")
+                    sleep_summary = [{"date": s['dateOfSleep'], "hrs": round(s['minutesAsleep']/60, 1)} for s in slp]
+
+                    st.session_state.master_data = {"table": "\n".join(table_rows), "sleep": sleep_summary}
+                    st.success("Sync Complete! 12 months of daily data aligned.")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Sync failed: {e}")
 
     # CHAT UI
-    if st.session_state.health_data:
+    if st.session_state.master_data:
         for m in st.session_state.ms:
             with st.chat_message(m["role"]): st.markdown(m["content"])
             
-        if p := st.chat_input("Ask about your trends (e.g. 'Compare my calories in vs out for this week')"):
+        if p := st.chat_input("Perform correlation (e.g. 'What is the correlation between my steps and weight loss?')"):
             st.session_state.ms.append({"role": "user", "content": p})
             with st.chat_message("user"): st.markdown(p)
             with st.chat_message("assistant"):
-                with st.spinner("AI is analyzing..."):
-                    ans = ask_ai_dynamic(st.session_state.health_data, p)
+                with st.spinner("Running statistical analysis..."):
+                    ans = ask_ai(st.session_state.master_data["table"], st.session_state.master_data["sleep"], p)
                     st.markdown(ans)
                     st.session_state.ms.append({"role": "assistant", "content": ans})
+        
+        with st.expander("View the 12-Month Master Table aligned for AI"):
+            st.text(st.session_state.master_data["table"])
 
 else:
-    scope = "activity%20heartrate%20nutrition%20profile%20sleep%20weight"
-    link = f"https://www.fitbit.com/oauth2/authorize?response_type=code&client_id={CID}&scope={scope}&redirect_uri={URI}"
-    st.markdown(f"### [🔗 Connect Fitbit for Total Analysis]({link})")
+    url = f"https://www.fitbit.com/oauth2/authorize?response_type=code&client_id={CID}&scope=activity%20heartrate%20nutrition%20profile%20sleep%20weight&redirect_uri={URI}"
+    st.markdown(f"### [🔗 Connect Fitbit]({url})")
 
 # END OF CODE
