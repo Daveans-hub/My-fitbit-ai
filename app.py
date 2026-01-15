@@ -11,22 +11,14 @@ URI = st.secrets["YOUR_SITE_URL"]
 
 # 2. AUTO-DETECTING AI FUNCTION
 def ask_ai_auto(ctx, q):
-    # Ask Google: "Which models can I use?"
     list_url = f"https://generativelanguage.googleapis.com/v1/models?key={GKEY}"
     try:
         m_data = requests.get(list_url).json()
-        # Find all models that support generating content
         all_m = [m["name"] for m in m_data.get("models", []) if "generateContent" in m.get("supportedGenerationMethods", [])]
-        
         if not all_m: return "Error: No AI models available for this key."
-        
-        # Prefer Flash 1.5, otherwise take whatever is first (like gemini-pro)
         target = next((m for m in all_m if "gemini-1.5-flash" in m), all_m[0])
-        
-        # Talk to the auto-detected model
         gen_url = f"https://generativelanguage.googleapis.com/v1/{target}:generateContent?key={GKEY}"
         payload = {"contents": [{"parts": [{"text": f"Fitbit Data: {ctx}. User Question: {q}"}]}]}
-        
         res = requests.post(gen_url, json=payload)
         return res.json()["candidates"][0]["content"]["parts"][0]["text"]
     except Exception as e:
@@ -39,30 +31,10 @@ st.title("🏃 My Personal Health AI")
 if "tk" not in st.session_state: st.session_state.tk = None
 if "ms" not in st.session_state: st.session_state.ms = []
 
-# 4. LOGIN LOGIC
-# We hide this entire section once we are connected
+# 4. EXCLUSIVE LOGIC (Prevents Ghost Errors)
 code = st.query_params.get("code")
 
-if not st.session_state.tk:
-    if not code:
-        link = f"https://www.fitbit.com/oauth2/authorize?response_type=code&client_id={CID}&scope=activity%20heartrate%20profile%20sleep%20weight&redirect_uri={URI}"
-        st.markdown(f"### [🔗 Click here to Connect Fitbit]({link})")
-    else:
-        try:
-            auth = base64.b64encode(f"{CID}:{SEC}".encode()).decode()
-            r = requests.post("https://api.fitbit.com/oauth2/token", 
-                headers={"Authorization": f"Basic {auth}", "Content-Type": "application/x-www-form-urlencoded"},
-                data={"grant_type": "authorization_code", "code": code, "redirect_uri": URI}).json()
-            if "access_token" in r:
-                st.session_state.tk = r["access_token"]
-                st.query_params.clear()
-                st.rerun()
-            else:
-                st.error("Connection failed. Please click the link again to refresh.")
-        except:
-            st.error("Connection error. Please check your internet.")
-
-# 5. MAIN APP (Only shows if connected)
+# Case A: Already Logged In
 if st.session_state.tk:
     st.sidebar.success("✅ Connected")
     if st.sidebar.button("Logout / Reset"):
@@ -73,17 +45,14 @@ if st.session_state.tk:
 
     hdr = {"Authorization": f"Bearer {st.session_state.tk}"}
     try:
-        # Pull 3 Sleep logs and 7 days of steps
         slp = requests.get("https://api.fitbit.com/1.2/user/-/sleep/list.json?afterDate=2024-01-01&limit=3", headers=hdr).json()
         stp = requests.get("https://api.fitbit.com/1/user/-/activities/steps/date/today/7d.json", headers=hdr).json()
-        ctx = f"Recent Sleep: {slp}, Recent Steps: {stp}"
-    except: ctx = "Syncing vitals..."
+        ctx = f"Sleep: {slp}, Steps: {stp}"
+    except: ctx = "Syncing data..."
 
-    # Display Chat History
     for m in st.session_state.ms:
         with st.chat_message(m["role"]): st.markdown(m["content"])
 
-    # Chat Input
     if p := st.chat_input("Ask me something..."):
         st.session_state.ms.append({"role": "user", "content": p})
         with st.chat_message("user"): st.markdown(p)
@@ -92,5 +61,26 @@ if st.session_state.tk:
                 ans = ask_ai_auto(ctx, p)
                 st.markdown(ans)
                 st.session_state.ms.append({"role": "assistant", "content": ans})
+
+# Case B: Just returned from Fitbit with a code
+elif code:
+    try:
+        auth = base64.b64encode(f"{CID}:{SEC}".encode()).decode()
+        r = requests.post("https://api.fitbit.com/oauth2/token", 
+            headers={"Authorization": f"Basic {auth}", "Content-Type": "application/x-www-form-urlencoded"},
+            data={"grant_type": "authorization_code", "code": code, "redirect_uri": URI}).json()
+        if "access_token" in r:
+            st.session_state.tk = r["access_token"]
+            st.query_params.clear()
+            st.rerun()
+        else:
+            st.error("Login failed. Please try the link again.")
+    except:
+        st.error("Connection issue during login.")
+
+# Case C: First visit, not logged in
+else:
+    link = f"https://www.fitbit.com/oauth2/authorize?response_type=code&client_id={CID}&scope=activity%20heartrate%20profile%20sleep%20weight&redirect_uri={URI}"
+    st.markdown(f"### [🔗 Click here to Connect Fitbit]({link})")
 
 # END OF CODE
