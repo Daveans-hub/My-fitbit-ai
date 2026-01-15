@@ -6,49 +6,67 @@ import json
 # 1. LOAD SECRETS
 CID, SEC, GKEY, URI = st.secrets["FITBIT_CLIENT_ID"], st.secrets["FITBIT_CLIENT_SECRET"], st.secrets["GEMINI_API_KEY"], st.secrets["YOUR_SITE_URL"]
 
-# 2. THE STATISTICAL ENGINE
+# 2. AUTO-DISCOVERY STATISTICAL ENGINE
 def ask_ai(master_table, sleep_data, user_query):
-    # Using the most powerful model for large datasets
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GKEY}"
-    
-    prompt = f"""
-    You are a Health Data Scientist.
-    Perform a multivariate regression analysis to determine which variables (Steps, Sleep, Calories In) 
-    have the strongest correlation with changes in Weight and Fat%.
-    
-    DATA (Date,Steps,Wgt,Fat,In,Out):
-    {master_table}
-    
-    SLEEP CONTEXT: {sleep_data}
-    
-    USER QUESTION: {user_query}
-    
-    OUTPUT REQUIREMENTS:
-    1. List variables in order of 'Impact Magnitude'.
-    2. Provide the estimated correlation coefficient (r) for each.
-    3. Note: If Menstrual Cycle is mentioned, explain Fitbit API limits but analyze Heart Rate/Weight for periodic spikes.
-    """
-    
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "safetySettings": [{"category": c, "threshold": "BLOCK_NONE"} for c in ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]]
-    }
-    
     try:
-        # TIMEOUT increased to 180 seconds for heavy math
-        res = requests.post(url, json=payload, timeout=180)
-        data = res.json()
+        # Step A: Discover the correct model and version automatically
+        # We check v1 first as it's the most likely stable home for your key
+        api_version = "v1"
+        list_url = f"https://generativelanguage.googleapis.com/{api_version}/models?key={GKEY}"
+        model_list_resp = requests.get(list_url)
         
-        if "candidates" in data:
-            return data["candidates"][0]["content"]["parts"][0]["text"]
-        else:
-            # SHOW RAW ERROR FOR DIAGNOSIS
-            return f"Google API Error: {json.dumps(data)}"
+        # If v1 fails, try v1beta
+        if model_list_resp.status_code != 200:
+            api_version = "v1beta"
+            list_url = f"https://generativelanguage.googleapis.com/{api_version}/models?key={GKEY}"
+            model_list_resp = requests.get(list_url)
+
+        model_data = model_list_resp.json()
+        available = [m['name'] for m in model_data.get('models', []) if 'generateContent' in m.get('supportedGenerationMethods', [])]
+        
+        if not available:
+            return "AI Error: No models found. Please check your API Key in Google AI Studio."
+
+        # Pick the best available (Priority: 1.5-flash, then 1.0-pro, then anything not 2.0)
+        selected_model = next((m for m in available if "1.5-flash" in m), 
+                         next((m for m in available if "gemini-pro" in m), available[0]))
+
+        # Step B: Construct the generation URL
+        gen_url = f"https://generativelanguage.googleapis.com/{api_version}/{selected_model}:generateContent?key={GKEY}"
+        
+        prompt = f"""
+        You are a Health Data Scientist. Perform a multivariate regression analysis.
+        
+        DATASET (Date,Steps,Weight,Fat%,CalIn,CalOut):
+        {master_table}
+        
+        SLEEP CONTEXT: {sleep_data}
+        
+        REQUEST: {user_query}
+        
+        GOAL: Determine which variables have the most statistical impact on Weight and Fat% changes. 
+        Order them from most to least impact. Note: Menstrual cycle data is not in the API, 
+        so look for internal patterns in Heart Rate/Weight if asked.
+        """
+        
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "safetySettings": [{"category": c, "threshold": "BLOCK_NONE"} for c in ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]]
+        }
+
+        # Step C: Execute with a long timeout for math
+        res = requests.post(gen_url, json=payload, timeout=120)
+        res_json = res.json()
+        
+        if "candidates" in res_json:
+            return res_json["candidates"][0]["content"]["parts"][0]["text"]
+        return f"Google Refusal: {json.dumps(res_json)}"
+            
     except Exception as e:
-        return f"System Error: {str(e)}"
+        return f"Discovery Error: {str(e)}"
 
 # 3. PAGE SETUP
-st.set_page_config(page_title="Health Data Scientist", layout="wide")
+st.set_page_config(page_title="Health Analyst Pro", layout="wide")
 st.title("🔬 Lifetime Correlation & Regression AI")
 
 if "tk" not in st.session_state: st.session_state.tk = None
@@ -71,17 +89,18 @@ if "code" in qp and not st.session_state.tk:
 
 # 5. MAIN APP
 if st.session_state.tk:
-    st.sidebar.success("✅ Linked")
+    st.sidebar.success("✅ Health Data Linked")
     if st.sidebar.button("Logout / Reset"):
         st.session_state.tk, st.session_state.master_data, st.session_state.ms = None, None, []
         st.query_params.clear()
         st.rerun()
 
     if not st.session_state.master_data:
-        if st.button("🔄 Sync 12-Month Master Table"):
-            with st.spinner("Aligning 12 months of daily metrics..."):
+        if st.button("🔄 Sync & Build Statistical Master Table"):
+            with st.spinner("Aligning 365 days of health metrics..."):
                 h = {"Authorization": f"Bearer {st.session_state.tk}"}
                 try:
+                    # Pull 1 year of all major metrics
                     s = requests.get("https://api.fitbit.com/1/user/-/activities/steps/date/today/1y.json", headers=h).json().get('activities-steps', [])
                     w = requests.get("https://api.fitbit.com/1/user/-/body/weight/date/today/1y.json", headers=h).json().get('body-weight', [])
                     f = requests.get("https://api.fitbit.com/1/user/-/body/fat/date/today/1y.json", headers=h).json().get('body-fat', [])
@@ -89,6 +108,7 @@ if st.session_state.tk:
                     ci = requests.get("https://api.fitbit.com/1/user/-/foods/log/caloriesIn/date/today/1y.json", headers=h).json().get('foods-log-caloriesIn', [])
                     sl = requests.get("https://api.fitbit.com/1.2/user/-/sleep/list.json?afterDate=2024-01-01&limit=20&sort=desc", headers=h).json().get('sleep', [])
 
+                    # Align by date
                     master = {}
                     for i in s: master[i['dateTime']] = [i['value'], "0", "0", "0", "0"]
                     for i in w: 
@@ -100,17 +120,16 @@ if st.session_state.tk:
                     for i in co: 
                         if i['dateTime'] in master: master[i['dateTime']][4] = i['value']
 
-                    # BUILD ULTRA-LEAN CSV
+                    # Create Ultra-Lean Table (Filter for Weight exists)
                     rows = ["D,S,W,F,I,O"]
-                    # Filter: Only send days where Weight exists to save space for math
                     for d in sorted(master.keys(), reverse=True):
                         v = master[d]
-                        if v[1] != "0": # Weight exists
+                        if v[1] != "0": # Only send days where Weight was logged
                             rows.append(f"{d},{v[0]},{v[1]},{v[2]},{v[3]},{v[4]}")
                     
                     sleep_txt = [{"d": x['dateOfSleep'], "h": round(x['minutesAsleep']/60, 1)} for x in sl]
-                    st.session_state.master_data = {"table": "\n".join(rows[:150]), "sleep": sleep_txt} # Top 150 valid days
-                    st.success("Synced 12 months (Top 150 weight-logged days)!")
+                    st.session_state.master_data = {"table": "\n".join(rows[:100]), "sleep": sleep_txt} # Cap at 100 days for performance
+                    st.success("Synced 12 months (Weight-logged days prioritized)!")
                     st.rerun()
                 except Exception as e: st.error(f"Sync failed: {e}")
 
@@ -118,11 +137,11 @@ if st.session_state.tk:
         for m in st.session_state.ms:
             with st.chat_message(m["role"]): st.markdown(m["content"])
             
-        if p := st.chat_input("Perform regression analysis..."):
+        if p := st.chat_input("Perform analysis..."):
             st.session_state.ms.append({"role": "user", "content": p})
             with st.chat_message("user"): st.markdown(p)
             with st.chat_message("assistant"):
-                with st.spinner("AI is calculating correlations... this takes a moment."):
+                with st.spinner("AI is performing regression analysis..."):
                     ans = ask_ai(st.session_state.master_data["table"], st.session_state.master_data["sleep"], p)
                     st.markdown(ans)
                     st.session_state.ms.append({"role": "assistant", "content": ans})
