@@ -9,33 +9,31 @@ SEC = st.secrets["FITBIT_CLIENT_SECRET"]
 GKEY = st.secrets["GEMINI_API_KEY"]
 URI = st.secrets["YOUR_SITE_URL"]
 
-# 2. UNIVERSAL AI FUNCTION
-def ask_ai(txt, q):
-    # Using v1beta and gemini-pro which is the most stable combination for AI Studio keys
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GKEY}"
-    
-    context_snippet = str(txt)[:3000]
-    payload = {
-        "contents": [{
-            "parts": [{"text": f"Context: {context_snippet}\n\nQuestion: {q}"}]
-        }]
-    }
-    
+# 2. AUTO-DETECTING AI FUNCTION
+def ask_ai_auto(ctx, q):
+    # Ask Google: "Which models can I use?"
+    list_url = f"https://generativelanguage.googleapis.com/v1/models?key={GKEY}"
     try:
-        res = requests.post(url, json=payload, timeout=15)
-        data = res.json()
+        m_data = requests.get(list_url).json()
+        # Find all models that support generating content
+        all_m = [m["name"] for m in m_data.get("models", []) if "generateContent" in m.get("supportedGenerationMethods", [])]
         
-        if "candidates" in data and len(data["candidates"]) > 0:
-            return data["candidates"][0]["content"]["parts"][0]["text"]
-        elif "error" in data:
-            return f"Google Error: {data['error']['message']}"
-        else:
-            return "AI failed to respond. Try again."
+        if not all_m: return "Error: No AI models available for this key."
+        
+        # Prefer Flash 1.5, otherwise take whatever is first
+        target = next((m for m in all_m if "gemini-1.5-flash" in m), all_m[0])
+        
+        # Talk to the auto-detected model
+        gen_url = f"https://generativelanguage.googleapis.com/v1/{target}:generateContent?key={GKEY}"
+        payload = {"contents": [{"parts": [{"text": f"Data: {ctx}. Question: {q}"}]}]}
+        
+        res = requests.post(gen_url, json=payload)
+        return res.json()["candidates"][0]["content"]["parts"][0]["text"]
     except Exception as e:
-        return f"System Error: {str(e)}"
+        return f"AI Error: {str(e)}"
 
 # 3. PAGE SETUP
-st.set_page_config(page_title="Health AI", layout="wide")
+st.set_page_config(page_title="Health AI")
 st.title("🏃 My Personal Health AI")
 
 if "tk" not in st.session_state: st.session_state.tk = None
@@ -45,7 +43,6 @@ if "ms" not in st.session_state: st.session_state.ms = []
 code = st.query_params.get("code")
 
 if not st.session_state.tk and not code:
-    # Removed a stray slash here that might have been causing Fitbit issues
     link = f"https://www.fitbit.com/oauth2/authorize?response_type=code&client_id={CID}&scope=activity%20heartrate%20profile%20sleep%20weight&redirect_uri={URI}"
     st.markdown(f"### [🔗 Click here to Connect Fitbit]({link})")
 
@@ -54,17 +51,12 @@ elif code and not st.session_state.tk:
         auth = base64.b64encode(f"{CID}:{SEC}".encode()).decode()
         r = requests.post("https://api.fitbit.com/oauth2/token", 
             headers={"Authorization": f"Basic {auth}", "Content-Type": "application/x-www-form-urlencoded"},
-            data={"grant_type": "authorization_code", "code": code, "redirect_uri": URI})
-        
-        resp_data = r.json()
-        if "access_token" in resp_data:
-            st.session_state.tk = resp_data["access_token"]
+            data={"grant_type": "authorization_code", "code": code, "redirect_uri": URI}).json()
+        if "access_token" in r:
+            st.session_state.tk = r["access_token"]
             st.query_params.clear()
             st.rerun()
-        else:
-            st.error(f"Fitbit Login Error: {resp_data}")
-    except Exception as e:
-        st.error(f"Login Connection Error: {e}")
+    except: st.error("Login failed.")
 
 # 5. MAIN APP
 if st.session_state.tk:
@@ -79,16 +71,17 @@ if st.session_state.tk:
         slp = requests.get("https://api.fitbit.com/1.2/user/-/sleep/list.json?afterDate=2024-01-01&limit=3", headers=hdr).json()
         stp = requests.get("https://api.fitbit.com/1/user/-/activities/steps/date/today/7d.json", headers=hdr).json()
         ctx = f"Sleep: {slp}, Steps: {stp}"
-    except: ctx = "Syncing data..."
+    except: ctx = "Vitals syncing..."
 
     for m in st.session_state.ms:
         with st.chat_message(m["role"]): st.markdown(m["content"])
 
-    if p := st.chat_input("Ask about your trends..."):
+    if p := st.chat_input("Ask me something..."):
         st.session_state.ms.append({"role": "user", "content": p})
         with st.chat_message("user"): st.markdown(p)
         with st.chat_message("assistant"):
-            with st.spinner("AI is analyzing..."):
-                ans = ask_ai(ctx, p)
+            with st.spinner("AI is thinking..."):
+                ans = ask_ai_auto(ctx, p)
                 st.markdown(ans)
                 st.session_state.ms.append({"role": "assistant", "content": ans})
+# END OF CODE
