@@ -6,24 +6,45 @@ import json
 # 1. LOAD SECRETS
 CID, SEC, GKEY, URI = st.secrets["FITBIT_CLIENT_ID"], st.secrets["FITBIT_CLIENT_SECRET"], st.secrets["GEMINI_API_KEY"], st.secrets["YOUR_SITE_URL"]
 
-# 2. FAST-PATH AI FUNCTION
+# 2. THE SELF-HEALING AI ENGINE
 def ask_ai(ctx, q):
-    # We use a direct v1 call to the fastest model to prevent timeouts
-    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GKEY}"
-    
-    payload = {
-        "contents": [{"parts": [{"text": f"You are a Health Data Scientist. DATA: {str(ctx)[:15000]}. QUESTION: {q}"}]}],
-        "safetySettings": [{"category": c, "threshold": "BLOCK_NONE"} for c in ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]]
-    }
     try:
-        # 60s timeout is plenty for this optimized data
-        r = requests.post(url, json=payload, timeout=60)
+        # STEP A: Discovery - Ask Google what models are active for your key right now
+        # We try v1beta as it is currently the most compatible for model listing
+        list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GKEY}"
+        model_list = requests.get(list_url).json()
+        
+        # Filter for models that actually support chat/content generation
+        available = [
+            m['name'] for m in model_list.get('models', []) 
+            if 'generateContent' in m.get('supportedGenerationMethods', [])
+        ]
+        
+        if not available:
+            return "AI Snag: No models found for this API key. Please check Google AI Studio."
+
+        # STEP B: Selection - Automatically pick the best model from the list
+        # Prefer 1.5 Flash, then Pro, otherwise take the first valid one
+        selected_model = next((m for m in available if "1.5-flash" in m), 
+                         next((m for m in available if "gemini-pro" in m), available[0]))
+
+        # STEP C: Execution - Use the full path provided by Google
+        gen_url = f"https://generativelanguage.googleapis.com/v1beta/{selected_model}:generateContent?key={GKEY}"
+        
+        payload = {
+            "contents": [{"parts": [{"text": f"You are a Health Data Scientist. DATA: {str(ctx)[:15000]}. QUESTION: {q}"}]}],
+            "safetySettings": [{"category": c, "threshold": "BLOCK_NONE"} for c in ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]]
+        }
+
+        r = requests.post(gen_url, json=payload, timeout=90)
         res = r.json()
+        
         if "candidates" in res:
             return res["candidates"][0]["content"]["parts"][0]["text"]
-        return f"AI Snag: {res.get('error', {}).get('message', 'Safety block')}"
+        return f"AI Snag: Google refused the request. Details: {res}"
+        
     except Exception as e:
-        return f"Timeout or Error: {str(e)}"
+        return f"System Snag: {str(e)}"
 
 # 3. PAGE SETUP
 st.set_page_config(page_title="Health Analyst Pro", layout="wide")
@@ -54,11 +75,9 @@ if st.session_state.tk:
     st.sidebar.divider()
     st.sidebar.header("Ask AI")
     
-    # This button triggers an automatic prompt
     if st.sidebar.button("Can you see my data?"):
         if st.session_state.data:
             st.session_state.ms.append({"role": "user", "content": "Can you see my data?"})
-            # Logic to handle response below
         else:
             st.sidebar.error("Sync data first!")
 
@@ -70,7 +89,7 @@ if st.session_state.tk:
     # --- DATA SYNC ---
     if not st.session_state.data:
         if st.button("🔄 Sync 12-Month Master Table"):
-            with st.spinner("Crunching 365 days of health metrics..."):
+            with st.spinner("Analyzing 12 months of records..."):
                 h = {"Authorization": f"Bearer {st.session_state.tk}"}
                 try:
                     s = requests.get("https://api.fitbit.com/1/user/-/activities/steps/date/today/1y.json", headers=h).json().get('activities-steps', [])
@@ -78,7 +97,6 @@ if st.session_state.tk:
                     f = requests.get("https://api.fitbit.com/1/user/-/body/fat/date/today/1y.json", headers=h).json().get('body-fat', [])
                     ci = requests.get("https://api.fitbit.com/1/user/-/foods/log/caloriesIn/date/today/1y.json", headers=h).json().get('foods-log-caloriesIn', [])
                     
-                    # Align and filter for valid days (where Weight exists)
                     master = {}
                     for i in s: master[i['dateTime']] = [i['value'], "0", "0", "0"]
                     for i in w: 
@@ -91,12 +109,11 @@ if st.session_state.tk:
                     rows = ["Date,Steps,Weight,Fat%,CalIn"]
                     for d in sorted(master.keys(), reverse=True):
                         v = master[d]
-                        if v[1] != "0": # Only send days where Weight was recorded
+                        if v[1] != "0": 
                             rows.append(f"{d},{v[0]},{v[1]},{v[2]},{v[3]}")
                     
-                    # We send the top 60 days of high-quality data to ensure fast analysis
                     st.session_state.data = "\n".join(rows[:60])
-                    st.success("Synced! 60 High-Quality Days Aligned.")
+                    st.success("Synced!")
                     st.rerun()
                 except Exception as e: st.error(f"Sync failed: {e}")
 
@@ -105,20 +122,22 @@ if st.session_state.tk:
         for m in st.session_state.ms:
             with st.chat_message(m["role"]): st.markdown(m["content"])
             
-        # Handle the Sidebar Button Prompt
+        # Automatic response for the Sidebar Button
         if st.session_state.ms and st.session_state.ms[-1]["role"] == "user" and st.session_state.ms[-1]["content"] == "Can you see my data?":
-            with st.chat_message("assistant"):
-                with st.spinner("Checking records..."):
-                    ans = ask_ai(st.session_state.data, "Confirm exactly what data you see and the date range.")
-                    st.markdown(ans)
-                    st.session_state.ms.append({"role": "assistant", "content": ans})
+            if "last_processed" not in st.session_state or st.session_state.last_processed != len(st.session_state.ms):
+                with st.chat_message("assistant"):
+                    with st.spinner("Checking records..."):
+                        ans = ask_ai(st.session_state.data, "Confirm exactly what metrics you see and the date range.")
+                        st.markdown(ans)
+                        st.session_state.ms.append({"role": "assistant", "content": ans})
+                        st.session_state.last_processed = len(st.session_state.ms)
 
-        # Handle Standard Chat Input
+        # Chat Input
         if p := st.chat_input("Ask for analysis..."):
             st.session_state.ms.append({"role": "user", "content": p})
             with st.chat_message("user"): st.markdown(p)
             with st.chat_message("assistant"):
-                with st.spinner("Analyzing correlations..."):
+                with st.spinner("Calculating..."):
                     ans = ask_ai(st.session_state.data, p)
                     st.markdown(ans)
                     st.session_state.ms.append({"role": "assistant", "content": ans})
