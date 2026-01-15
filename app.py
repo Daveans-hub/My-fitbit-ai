@@ -6,34 +6,42 @@ import json
 # 1. LOAD SECRETS
 CID, SEC, GKEY, URI = st.secrets["FITBIT_CLIENT_ID"], st.secrets["FITBIT_CLIENT_SECRET"], st.secrets["GEMINI_API_KEY"], st.secrets["YOUR_SITE_URL"]
 
-# 2. FAIL-SAFE AI FUNCTION
+# 2. DATA SCIENTIST AI FUNCTION
 def ask_ai(master_table, sleep_data, user_query):
     try:
-        # Step A: Get all available models
+        # Step A: Get models and find the best worker
         list_url = f"https://generativelanguage.googleapis.com/v1/models?key={GKEY}"
         model_list = requests.get(list_url).json()
+        all_m = [m['name'] for m in model_list.get('models', []) if 'generateContent' in m.get('supportedGenerationMethods', [])]
+        priority = [m for m in all_m if "1.5-flash" in m] + [m for m in all_m if "gemini-pro" in m]
         
-        # Step B: Filter and Prioritize (We exclude 2.0 because of your 0-quota error)
-        all_models = [
-            m['name'] for m in model_list.get('models', []) 
-            if 'generateContent' in m.get('supportedGenerationMethods', [])
-        ]
+        # Step B: Clean the table for faster processing
+        # We only send lines that have a Weight value (not 0) to allow for regression
+        lines = master_table.split('\n')
+        clean_rows = [lines[0]] # Keep Header
+        for line in lines[1:]:
+            parts = line.split(',')
+            if len(parts) > 2 and parts[2] != "0": # Index 2 is Weight
+                clean_rows.append(line)
         
-        # Preference order: 1.5-flash (stable), 1.0-pro (backup), then anything else non-2.0
-        priority_list = [m for m in all_models if "1.5-flash" in m]
-        priority_list += [m for m in all_models if "gemini-pro" in m and "2.0" not in m]
-        priority_list += [m for m in all_models if m not in priority_list and "2.0" not in m]
+        clean_table = "\n".join(clean_rows[:200]) # Limit to 200 high-quality data points for speed
 
-        if not priority_list:
-            return "No stable Gemini models found for this API key."
-
-        # Step C: The Failover Loop
-        # We try each model. If one hits a quota (429), we try the next one.
         prompt = f"""
-        You are a health data scientist. Use this 12-month dataset.
-        DATA (Date, Steps, Weight, Fat%, In, Out): {str(master_table)[:15000]}
-        SLEEP: {sleep_data}
-        QUESTION: {user_query}
+        You are a Health Data Scientist. Perform a multivariate regression and correlation analysis.
+        
+        USER REQUEST: {user_query}
+        
+        DATASET (Date, Steps, Weight, Fat%, CaloriesIn, CaloriesOut):
+        {clean_table}
+        
+        SLEEP CONTEXT:
+        {sleep_data}
+        
+        INSTRUCTIONS:
+        1. Calculate the statistical correlation between activity/sleep and weight/fat.
+        2. Identify which variable has the highest 'Impact Factor' on weight changes.
+        3. Order variables from most to least impact.
+        4. Be technical but clear.
         """
         
         payload = {
@@ -41,27 +49,22 @@ def ask_ai(master_table, sleep_data, user_query):
             "safetySettings": [{"category": c, "threshold": "BLOCK_NONE"} for c in ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]]
         }
 
-        last_error = ""
-        for model_path in priority_list:
+        for model_path in priority:
             gen_url = f"https://generativelanguage.googleapis.com/v1/{model_path}:generateContent?key={GKEY}"
-            res = requests.post(gen_url, json=payload, timeout=40)
+            # TIMEOUT increased to 120s for math processing
+            res = requests.post(gen_url, json=payload, timeout=120) 
             res_json = res.json()
-            
             if "candidates" in res_json:
                 return res_json["candidates"][0]["content"]["parts"][0]["text"]
-            
-            # If this model has a quota error (429), the loop continues to the next model
-            last_error = res_json.get('error', {}).get('message', 'Unknown error')
             continue
-
-        return f"AI Error: All models hit quota limits. Google says: {last_error}"
             
+        return "AI analysis failed to complete. Try a simpler question."
     except Exception as e:
-        return f"System Error: {str(e)}"
+        return f"Statistical Error: {str(e)}"
 
 # 3. PAGE SETUP
-st.set_page_config(page_title="Health Data Scientist", layout="wide")
-st.title("🔬 Lifetime Health Analyst")
+st.set_page_config(page_title="Health Analyst Pro", layout="wide")
+st.title("🔬 Lifetime Correlation & Regression AI")
 
 if "tk" not in st.session_state: st.session_state.tk = None
 if "ms" not in st.session_state: st.session_state.ms = []
@@ -83,15 +86,15 @@ if "code" in qp and not st.session_state.tk:
 
 # 5. MAIN APP
 if st.session_state.tk:
-    st.sidebar.success("✅ Linked")
+    st.sidebar.success("✅ Health Data Linked")
     if st.sidebar.button("Logout / Reset"):
         st.session_state.tk, st.session_state.master_data, st.session_state.ms = None, None, []
         st.query_params.clear()
         st.rerun()
 
     if not st.session_state.master_data:
-        if st.button("🔄 Sync 12-Month Master Table"):
-            with st.spinner("Aligning 365 days of health metrics..."):
+        if st.button("🔄 Sync & Build Statistical Master Table"):
+            with st.spinner("Processing 12 months of daily metrics..."):
                 h = {"Authorization": f"Bearer {st.session_state.tk}"}
                 try:
                     s = requests.get("https://api.fitbit.com/1/user/-/activities/steps/date/today/1y.json", headers=h).json().get('activities-steps', [])
@@ -99,7 +102,7 @@ if st.session_state.tk:
                     f = requests.get("https://api.fitbit.com/1/user/-/body/fat/date/today/1y.json", headers=h).json().get('body-fat', [])
                     co = requests.get("https://api.fitbit.com/1/user/-/activities/calories/date/today/1y.json", headers=h).json().get('activities-calories', [])
                     ci = requests.get("https://api.fitbit.com/1/user/-/foods/log/caloriesIn/date/today/1y.json", headers=h).json().get('foods-log-caloriesIn', [])
-                    sl = requests.get("https://api.fitbit.com/1.2/user/-/sleep/list.json?afterDate=2024-01-01&limit=20&sort=desc", headers=h).json().get('sleep', [])
+                    sl = requests.get("https://api.fitbit.com/1.2/user/-/sleep/list.json?afterDate=2024-01-01&limit=30&sort=desc", headers=h).json().get('sleep', [])
 
                     master = {}
                     for i in s: master[i['dateTime']] = [i['value'], "0", "0", "0", "0"]
@@ -112,14 +115,13 @@ if st.session_state.tk:
                     for i in co: 
                         if i['dateTime'] in master: master[i['dateTime']][4] = i['value']
 
-                    rows = ["Date,Steps,Wgt,Fat%,In,Out"]
+                    rows = ["Date,Steps,Weight,Fat%,In,Out"]
                     for d in sorted(master.keys(), reverse=True):
                         v = master[d]
                         rows.append(f"{d},{v[0]},{v[1]},{v[2]},{v[3]},{v[4]}")
                     
                     sleep_txt = [{"d": x['dateOfSleep'], "h": round(x['minutesAsleep']/60, 1)} for x in sl]
                     st.session_state.master_data = {"table": "\n".join(rows), "sleep": sleep_txt}
-                    st.success("Synced 365 days!")
                     st.rerun()
                 except Exception as e: st.error(f"Sync failed: {e}")
 
@@ -127,11 +129,11 @@ if st.session_state.tk:
         for m in st.session_state.ms:
             with st.chat_message(m["role"]): st.markdown(m["content"])
             
-        if p := st.chat_input("Perform correlation or regression..."):
+        if p := st.chat_input("Ask for statistical analysis..."):
             st.session_state.ms.append({"role": "user", "content": p})
             with st.chat_message("user"): st.markdown(p)
             with st.chat_message("assistant"):
-                with st.spinner("Analyzing lifetime trends..."):
+                with st.spinner("AI is calculating correlations... this takes up to 60 seconds."):
                     ans = ask_ai(st.session_state.master_data["table"], st.session_state.master_data["sleep"], p)
                     st.markdown(ans)
                     st.session_state.ms.append({"role": "assistant", "content": ans})
