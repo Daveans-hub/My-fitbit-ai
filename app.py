@@ -37,4 +37,74 @@ qp = st.query_params
 if "code" in qp and not st.session_state.tk:
     try:
         auth_b64 = base64.b64encode(f"{CID}:{SEC}".encode()).decode()
-        r = requests.post("https://api.fitbit.com/
+        r = requests.post("https://api.fitbit.com/oauth2/token", 
+            headers={"Authorization": f"Basic {auth_b64}", "Content-Type": "application/x-www-form-urlencoded"},
+            data={"grant_type": "authorization_code", "code": qp["code"], "redirect_uri": URI}).json()
+        if "access_token" in r:
+            st.session_state.tk = r["access_token"]
+            st.query_params.clear()
+            st.rerun()
+    except: st.error("Login failed. Please refresh.")
+
+# 5. MAIN APP
+if st.session_state.tk:
+    st.sidebar.success("✅ Linked")
+    if st.sidebar.button("Logout / Re-Sync"):
+        st.session_state.tk, st.session_state.health_data, st.session_state.ms = None, None, []
+        st.query_params.clear()
+        st.rerun()
+
+    # THE "TOTAL SYNC" (Now including Calories In)
+    if not st.session_state.health_data:
+        if st.button("🔄 Sync All Health Data (12 Months)"):
+            with st.spinner("Fetching full history including Nutrition..."):
+                h = {"Authorization": f"Bearer {st.session_state.tk}"}
+                try:
+                    # Pull all metrics
+                    w = requests.get("https://api.fitbit.com/1/user/-/body/weight/date/today/1y.json", headers=h).json().get('body-weight', [])
+                    f = requests.get("https://api.fitbit.com/1/user/-/body/fat/date/today/1y.json", headers=h).json().get('body-fat', [])
+                    s = requests.get("https://api.fitbit.com/1/user/-/activities/steps/date/today/1y.json", headers=h).json().get('activities-steps', [])
+                    cout = requests.get("https://api.fitbit.com/1/user/-/activities/calories/date/today/1y.json", headers=h).json().get('activities-calories', [])
+                    # NEW: Calories In (Nutrition)
+                    cin = requests.get("https://api.fitbit.com/1/user/-/foods/log/caloriesIn/date/today/1y.json", headers=h).json().get('foods-log-caloriesIn', [])
+                    sl = requests.get("https://api.fitbit.com/1.2/user/-/sleep/list.json?afterDate=2024-01-01&limit=20&sort=desc", headers=h).json().get('sleep', [])
+                    
+                    # Reverse all for "Today First" viewing
+                    w.reverse(); f.reverse(); s.reverse(); cout.reverse(); cin.reverse()
+                    
+                    summary = {
+                        "DAILY_RECENT_TRENDS": {
+                            "Weight": w[:14], 
+                            "Steps": s[:14], 
+                            "Calories_Burned": cout[:14], 
+                            "Calories_Consumed_In": cin[:14]
+                        },
+                        "SLEEP_LAST_20": [{"date": i['dateOfSleep'], "hrs": round(i['minutesAsleep']/60, 1)} for i in sl],
+                        "FAT_PERCENT_LATEST": f[:5]
+                    }
+                    st.session_state.health_data = str(summary)
+                    st.success("Total Health History (including Nutrition) Loaded!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Sync failed: {e}")
+
+    # CHAT UI
+    if st.session_state.health_data:
+        for m in st.session_state.ms:
+            with st.chat_message(m["role"]): st.markdown(m["content"])
+            
+        if p := st.chat_input("Ask about your trends (e.g. 'Compare my calories in vs out for this week')"):
+            st.session_state.ms.append({"role": "user", "content": p})
+            with st.chat_message("user"): st.markdown(p)
+            with st.chat_message("assistant"):
+                with st.spinner("AI is analyzing..."):
+                    ans = ask_ai_dynamic(st.session_state.health_data, p)
+                    st.markdown(ans)
+                    st.session_state.ms.append({"role": "assistant", "content": ans})
+
+else:
+    scope = "activity%20heartrate%20nutrition%20profile%20sleep%20weight"
+    link = f"https://www.fitbit.com/oauth2/authorize?response_type=code&client_id={CID}&scope={scope}&redirect_uri={URI}"
+    st.markdown(f"### [🔗 Connect Fitbit for Total Analysis]({link})")
+
+# END OF CODE
