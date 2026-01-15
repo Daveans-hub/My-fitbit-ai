@@ -6,10 +6,10 @@ import json
 # 1. LOAD SECRETS
 CID, SEC, GKEY, URI = st.secrets["FITBIT_CLIENT_ID"], st.secrets["FITBIT_CLIENT_SECRET"], st.secrets["GEMINI_API_KEY"], st.secrets["YOUR_SITE_URL"]
 
-# 2. THE SCIENTIST AI FUNCTION
+# 2. THE SCIENTIST AI FUNCTION (With Safety Overrides)
 def ask_ai(master_table, sleep_data, user_query):
-    # Switched to gemini-1.5-flash which has a reliable free quota
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GKEY}"
+    # Using v1beta with the correct model name
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GKEY}"
     
     prompt = f"""
     You are a professional health data scientist. 
@@ -18,25 +18,26 @@ def ask_ai(master_table, sleep_data, user_query):
     DATA (Date, Steps, Weight, Fat%, CaloriesIn, CaloriesOut):
     {master_table}
     
-    SLEEP HISTORY (Last 20 sessions):
+    SLEEP HISTORY:
     {sleep_data}
     
     USER QUESTION: {user_query}
     
-    INSTRUCTIONS: 
-    - Perform statistical analysis (correlations/regressions).
-    - If Weight or CaloriesIn are '0', ignore those days for those specific trends.
-    - Be concise but scientifically accurate.
+    OUTPUT: Provide a statistical analysis. If a correlation is weak, say so. 
+    Focus on patterns between activity, sleep, and weight.
     """
+    
+    # These settings prevent Google from blocking health-related data
+    safety_settings = [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+    ]
     
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "safetySettings": [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-        ]
+        "safetySettings": safety_settings
     }
     
     try:
@@ -48,13 +49,14 @@ def ask_ai(master_table, sleep_data, user_query):
         elif "error" in data:
             return f"Google API Error: {data['error']['message']}"
         else:
+            # This will show us if it was blocked for 'Safety'
             return f"AI Refusal. Data received: {json.dumps(data)[:500]}"
             
     except Exception as e:
         return f"System Error: {str(e)}"
 
 # 3. PAGE SETUP
-st.set_page_config(page_title="Lifetime Health Scientist", layout="wide")
+st.set_page_config(page_title="Health Data Scientist", layout="wide")
 st.title("🔬 Lifetime Health Analyst")
 
 if "tk" not in st.session_state: st.session_state.tk = None
@@ -69,10 +71,9 @@ if "code" in qp and not st.session_state.tk:
         r = requests.post("https://api.fitbit.com/oauth2/token", 
             headers={"Authorization": f"Basic {auth_b}", "Content-Type": "application/x-www-form-urlencoded"},
             data={"grant_type": "authorization_code", "code": qp["code"], "redirect_uri": URI}).json()
-        if "access_token" in r:
-            st.session_state.tk = r["access_token"]
-            st.query_params.clear()
-            st.rerun()
+        st.session_state.tk = r.get("access_token")
+        st.query_params.clear()
+        st.rerun()
     except: st.error("Login failed.")
 
 # 5. MAIN APP
@@ -80,15 +81,13 @@ if st.session_state.tk:
     st.sidebar.success("✅ Linked")
     if st.sidebar.button("Logout / Reset"):
         st.session_state.tk, st.session_state.master_data, st.session_state.ms = None, None, []
-        st.query_params.clear()
         st.rerun()
 
     if not st.session_state.master_data:
         if st.button("🔄 Sync 12-Month Master Table"):
-            with st.spinner("Processing 12 months of daily metrics..."):
+            with st.spinner("Processing 12 months of data..."):
                 h = {"Authorization": f"Bearer {st.session_state.tk}"}
                 try:
-                    # Pull 1 year of all major metrics
                     s = requests.get("https://api.fitbit.com/1/user/-/activities/steps/date/today/1y.json", headers=h).json().get('activities-steps', [])
                     w = requests.get("https://api.fitbit.com/1/user/-/body/weight/date/today/1y.json", headers=h).json().get('body-weight', [])
                     f = requests.get("https://api.fitbit.com/1/user/-/body/fat/date/today/1y.json", headers=h).json().get('body-fat', [])
@@ -96,7 +95,6 @@ if st.session_state.tk:
                     ci = requests.get("https://api.fitbit.com/1/user/-/foods/log/caloriesIn/date/today/1y.json", headers=h).json().get('foods-log-caloriesIn', [])
                     sl = requests.get("https://api.fitbit.com/1.2/user/-/sleep/list.json?afterDate=2024-01-01&limit=20&sort=desc", headers=h).json().get('sleep', [])
 
-                    # Align by date
                     master = {}
                     for i in s: master[i['dateTime']] = [i['value'], "0", "0", "0", "0"]
                     for i in w: 
@@ -115,7 +113,6 @@ if st.session_state.tk:
                     
                     sleep_txt = [{"d": x['dateOfSleep'], "h": round(x['minutesAsleep']/60, 1)} for x in sl]
                     st.session_state.master_data = {"table": "\n".join(rows), "sleep": sleep_txt}
-                    st.success("Synced 365 days of data!")
                     st.rerun()
                 except Exception as e: st.error(f"Sync failed: {e}")
 
@@ -123,11 +120,11 @@ if st.session_state.tk:
         for m in st.session_state.ms:
             with st.chat_message(m["role"]): st.markdown(m["content"])
             
-        if p := st.chat_input("Ask for a correlation (e.g. 'How does my step count affect my weight loss?')"):
+        if p := st.chat_input("Ask for a regression or correlation..."):
             st.session_state.ms.append({"role": "user", "content": p})
             with st.chat_message("user"): st.markdown(p)
             with st.chat_message("assistant"):
-                with st.spinner("Analyzing 12-month trends..."):
+                with st.spinner("Analyzing..."):
                     ans = ask_ai(st.session_state.master_data["table"], st.session_state.master_data["sleep"], p)
                     st.markdown(ans)
                     st.session_state.ms.append({"role": "assistant", "content": ans})
