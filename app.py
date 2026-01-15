@@ -9,13 +9,21 @@ CLIENT_SECRET = st.secrets["FITBIT_CLIENT_SECRET"]
 GEMINI_KEY = st.secrets["GEMINI_API_KEY"]
 REDIRECT_URI = st.secrets["YOUR_SITE_URL"] 
 
-# Setup AI with the most stable model name
-try:
-    genai.configure(api_key=GEMINI_KEY)
-    # Changed to 'gemini-1.5-flash' (removed -latest for better cloud compatibility)
-    model = genai.GenerativeModel('gemini-1.5-flash')
-except Exception as e:
-    st.error(f"AI Setup Error: {e}")
+# Setup AI with a "Safety Cycle"
+genai.configure(api_key=GEMINI_KEY)
+
+def get_ai_response(full_prompt):
+    # Try different model names that Google often switches between
+    model_names = ['gemini-1.5-flash-latest', 'gemini-1.5-flash', 'gemini-pro']
+    
+    for name in model_names:
+        try:
+            model = genai.GenerativeModel(name)
+            response = model.generate_content(full_prompt)
+            return response.text
+        except Exception as e:
+            continue # Try the next name if this one fails
+    return "Error: All AI model variants failed. Please check your API key."
 
 st.set_page_config(page_title="Fitbit AI Assistant", layout="wide")
 st.title("🏃 My Personal Health AI")
@@ -63,9 +71,8 @@ if st.session_state.access_token:
         try:
             sleep = requests.get("https://api.fitbit.com/1.2/user/-/sleep/list.json?afterDate=2024-01-01&sort=desc&offset=0&limit=7", headers=h).json()
             steps = requests.get("https://api.fitbit.com/1/user/-/activities/steps/date/today/7d.json", headers=h).json()
-            weight = requests.get("https://api.fitbit.com/1/user/-/body/log/weight/date/today/7d.json", headers=h).json()
             heart = requests.get("https://api.fitbit.com/1/user/-/activities/heart/date/today/1d.json", headers=h).json()
-            all_data_context = f"Sleep: {sleep} Steps: {steps} Weight: {weight} Heart: {heart}"
+            all_data_context = f"Sleep: {sleep} Steps: {steps} Heart: {heart}"
         except:
             all_data_context = "Data sync in progress..."
 
@@ -79,10 +86,8 @@ if st.session_state.access_token:
         with st.chat_message("user"):
             st.markdown(prompt)
         with st.chat_message("assistant"):
-            try:
-                response = model.generate_content(f"Context: {all_data_context}. Question: {prompt}")
-                st.markdown(response.text)
-                st.session_state.messages.append({"role": "assistant", "content": response.text})
-            except Exception as ai_err:
-                st.error(f"AI Error: {ai_err}")
-                st.info("The AI is having trouble accessing the model. Double check your API key in Secrets.")
+            with st.spinner("AI is thinking..."):
+                full_prompt = f"Context: {all_data_context}. Question: {prompt}"
+                answer = get_ai_response(full_prompt)
+                st.markdown(answer)
+                st.session_state.messages.append({"role": "assistant", "content": answer})
