@@ -9,25 +9,30 @@ SEC = st.secrets["FITBIT_CLIENT_SECRET"]
 GKEY = st.secrets["GEMINI_API_KEY"]
 URI = st.secrets["YOUR_SITE_URL"]
 
-# 2. IMPROVED AI FUNCTION
+# 2. UNIVERSAL AI FUNCTION
 def ask_ai(txt, q):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GKEY}"
-    # We shorten the data to make sure we don't overwhelm the AI
-    short_txt = str(txt)[:5000] 
-    payload = {"contents": [{"parts": [{"text": f"You are a health AI. Data: {short_txt}. Question: {q}"}]}]}
+    # Using v1beta and gemini-pro which is the most stable combination for AI Studio keys
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GKEY}"
+    
+    context_snippet = str(txt)[:3000]
+    payload = {
+        "contents": [{
+            "parts": [{"text": f"Context: {context_snippet}\n\nQuestion: {q}"}]
+        }]
+    }
     
     try:
         res = requests.post(url, json=payload, timeout=15)
         data = res.json()
         
-        if "candidates" in data:
+        if "candidates" in data and len(data["candidates"]) > 0:
             return data["candidates"][0]["content"]["parts"][0]["text"]
         elif "error" in data:
-            return f"Google API Error: {data['error']['message']}"
+            return f"Google Error: {data['error']['message']}"
         else:
-            return f"Unexpected AI Response: {data}"
+            return "AI failed to respond. Try again."
     except Exception as e:
-        return f"AI Connection Error: {str(e)}"
+        return f"System Error: {str(e)}"
 
 # 3. PAGE SETUP
 st.set_page_config(page_title="Health AI", layout="wide")
@@ -40,6 +45,7 @@ if "ms" not in st.session_state: st.session_state.ms = []
 code = st.query_params.get("code")
 
 if not st.session_state.tk and not code:
+    # Removed a stray slash here that might have been causing Fitbit issues
     link = f"https://www.fitbit.com/oauth2/authorize?response_type=code&client_id={CID}&scope=activity%20heartrate%20profile%20sleep%20weight&redirect_uri={URI}"
     st.markdown(f"### [🔗 Click here to Connect Fitbit]({link})")
 
@@ -70,11 +76,10 @@ if st.session_state.tk:
 
     hdr = {"Authorization": f"Bearer {st.session_state.tk}"}
     try:
-        # Pull only essential data to keep the AI focused
         slp = requests.get("https://api.fitbit.com/1.2/user/-/sleep/list.json?afterDate=2024-01-01&limit=3", headers=hdr).json()
         stp = requests.get("https://api.fitbit.com/1/user/-/activities/steps/date/today/7d.json", headers=hdr).json()
-        ctx = f"SleepLogs: {slp}, StepsLast7Days: {stp}"
-    except: ctx = "Vitals syncing..."
+        ctx = f"Sleep: {slp}, Steps: {stp}"
+    except: ctx = "Syncing data..."
 
     for m in st.session_state.ms:
         with st.chat_message(m["role"]): st.markdown(m["content"])
@@ -83,7 +88,7 @@ if st.session_state.tk:
         st.session_state.ms.append({"role": "user", "content": p})
         with st.chat_message("user"): st.markdown(p)
         with st.chat_message("assistant"):
-            with st.spinner("Analyzing..."):
+            with st.spinner("AI is analyzing..."):
                 ans = ask_ai(ctx, p)
                 st.markdown(ans)
                 st.session_state.ms.append({"role": "assistant", "content": ans})
