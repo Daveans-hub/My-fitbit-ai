@@ -6,42 +6,50 @@ import json
 # 1. LOAD SECRETS
 CID, SEC, GKEY, URI = st.secrets["FITBIT_CLIENT_ID"], st.secrets["FITBIT_CLIENT_SECRET"], st.secrets["GEMINI_API_KEY"], st.secrets["YOUR_SITE_URL"]
 
-# 2. THE SELF-HEALING AI ENGINE
+# 2. FAIL-SAFE AI ENGINE
 def ask_ai(ctx, q):
     try:
-        # STEP A: Discovery - Ask Google what models are active for your key right now
-        # We try v1beta as it is currently the most compatible for model listing
+        # Step A: Discovery - Ask Google what models are available
         list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GKEY}"
         model_list = requests.get(list_url).json()
         
-        # Filter for models that actually support chat/content generation
         available = [
             m['name'] for m in model_list.get('models', []) 
             if 'generateContent' in m.get('supportedGenerationMethods', [])
         ]
         
         if not available:
-            return "AI Snag: No models found for this API key. Please check Google AI Studio."
+            return "AI Snag: No models found for this API key."
 
-        # STEP B: Selection - Automatically pick the best model from the list
-        # Prefer 1.5 Flash, then Pro, otherwise take the first valid one
-        selected_model = next((m for m in available if "1.5-flash" in m), 
-                         next((m for m in available if "gemini-pro" in m), available[0]))
+        # Step B: Priority Order - We prefer 1.5-flash as it's the most stable
+        priority = [m for m in available if "1.5-flash" in m]
+        priority += [m for m in available if "gemini-pro" in m and "2." not in m]
+        priority += [m for m in available if m not in priority] # Everything else
 
-        # STEP C: Execution - Use the full path provided by Google
-        gen_url = f"https://generativelanguage.googleapis.com/v1beta/{selected_model}:generateContent?key={GKEY}"
-        
+        # Step C: The Failover Loop
+        # If a model returns a 429 (Quota Error), we automatically try the next one
+        last_error = ""
         payload = {
             "contents": [{"parts": [{"text": f"You are a Health Data Scientist. DATA: {str(ctx)[:15000]}. QUESTION: {q}"}]}],
             "safetySettings": [{"category": c, "threshold": "BLOCK_NONE"} for c in ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]]
         }
 
-        r = requests.post(gen_url, json=payload, timeout=90)
-        res = r.json()
-        
-        if "candidates" in res:
-            return res["candidates"][0]["content"]["parts"][0]["text"]
-        return f"AI Snag: Google refused the request. Details: {res}"
+        for model_path in priority:
+            gen_url = f"https://generativelanguage.googleapis.com/v1beta/{model_path}:generateContent?key={GKEY}"
+            try:
+                r = requests.post(gen_url, json=payload, timeout=60)
+                res = r.json()
+                
+                if "candidates" in res:
+                    return res["candidates"][0]["content"]["parts"][0]["text"]
+                
+                # If we get here, this specific model failed (likely 429 quota error)
+                last_error = res.get('error', {}).get('message', 'Unknown model error')
+                continue # Try the next model in the list
+            except:
+                continue
+
+        return f"AI Snag: All available models hit a quota limit. Last message: {last_error}"
         
     except Exception as e:
         return f"System Snag: {str(e)}"
@@ -70,7 +78,7 @@ if "code" in qp and not st.session_state.tk:
 
 # 5. MAIN APP
 if st.session_state.tk:
-    # --- SIDEBAR: ASK AI SECTION ---
+    # --- SIDEBAR ---
     st.sidebar.success("✅ Linked to Fitbit")
     st.sidebar.divider()
     st.sidebar.header("Ask AI")
@@ -122,17 +130,17 @@ if st.session_state.tk:
         for m in st.session_state.ms:
             with st.chat_message(m["role"]): st.markdown(m["content"])
             
-        # Automatic response for the Sidebar Button
+        # Sidebar Button Logic
         if st.session_state.ms and st.session_state.ms[-1]["role"] == "user" and st.session_state.ms[-1]["content"] == "Can you see my data?":
             if "last_processed" not in st.session_state or st.session_state.last_processed != len(st.session_state.ms):
                 with st.chat_message("assistant"):
-                    with st.spinner("Checking records..."):
+                    with st.spinner("Checking..."):
                         ans = ask_ai(st.session_state.data, "Confirm exactly what metrics you see and the date range.")
                         st.markdown(ans)
                         st.session_state.ms.append({"role": "assistant", "content": ans})
                         st.session_state.last_processed = len(st.session_state.ms)
 
-        # Chat Input
+        # Standard Input
         if p := st.chat_input("Ask for analysis..."):
             st.session_state.ms.append({"role": "user", "content": p})
             with st.chat_message("user"): st.markdown(p)
