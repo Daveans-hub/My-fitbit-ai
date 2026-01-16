@@ -1,21 +1,34 @@
-
 import streamlit as st
 import requests
 import base64
+import json
 from datetime import datetime, timedelta
 
 # 1. SETUP SECRETS
-CID, SEC, URI = st.secrets["FITBIT_CLIENT_ID"], st.secrets["FITBIT_CLIENT_SECRET"], st.secrets["YOUR_SITE_URL"]
+CID, SEC, GKEY, URI = st.secrets["FITBIT_CLIENT_ID"], st.secrets["FITBIT_CLIENT_SECRET"], st.secrets["GEMINI_API_KEY"], st.secrets["YOUR_SITE_URL"]
 
-st.set_page_config(page_title="Fitbit Data Cache", layout="wide")
-st.title("📡 Fitbit High-Performance Sync")
-st.write("Vitals: **6 Months** | Macros: **3 Months**")
+# 2. PERFORMANCE COACH AI ENGINE
+def ask_ai(ctx, q):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GKEY}"
+    payload = {
+        "contents": [{"parts": [{"text": f"You are an Elite Performance Coach & Data Scientist. Analyze this master dataset for correlations and regressions. \n\n DATA: {ctx} \n\n REQUEST: {q}"}]}],
+        "safetySettings": [{"category": c, "threshold": "BLOCK_NONE"} for c in ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]]
+    }
+    try:
+        r = requests.post(url, json=payload, timeout=60)
+        return r.json()['candidates'][0]['content']['parts'][0]['text']
+    except Exception as e:
+        return f"Coach is busy. Error: {e}"
 
-# Setup Memory (so we don't hit the rate limit twice)
+# 3. PAGE SETUP
+st.set_page_config(page_title="Performance AI", layout="wide")
+st.title("🔬 Elite Performance Analyst")
+
 if "tk" not in st.session_state: st.session_state.tk = None
 if "cached_data" not in st.session_state: st.session_state.cached_data = None
+if "ms" not in st.session_state: st.session_state.ms = []
 
-# 2. LOGIN LOGIC
+# 4. LOGIN LOGIC
 qp = st.query_params
 if "code" in qp and not st.session_state.tk:
     try:
@@ -27,99 +40,107 @@ if "code" in qp and not st.session_state.tk:
             st.session_state.tk = r["access_token"]
             st.query_params.clear()
             st.rerun()
-    except Exception as e:
-        st.error(f"Login failed: {e}")
+    except: st.error("Login failed.")
 
-# 3. DATA COLLECTION ENGINE
+# 5. MAIN APP
 if st.session_state.tk:
-    st.sidebar.success("✅ Connected")
+    # --- SIDEBAR COACHING PANEL ---
+    st.sidebar.success("✅ Fitbit Linked")
+    st.sidebar.header("Step 1: Trend Analysis")
     
-    # Show Rate Limit Warning
-    st.sidebar.warning("⚠️ Fitbit Limit: 150 requests/hour. A 90-day sync uses ~95 requests. Do not click Sync more than once per hour!")
+    if st.sidebar.button("⚖️ Weight & Fat% Impact"):
+        st.session_state.ms.append({"role": "user", "content": "What is having the most impact on my weight and body fat %? Analyze my calories in/out, activity, and macronutrient trends."})
+    
+    if st.sidebar.button("🌙 Sleep Quality Impact"):
+        st.session_state.ms.append({"role": "user", "content": "What is having the most impact on my sleep? Analyze my activity, heart rate, and macro correlations to find why my Sleep Score changes."})
+        
+    if st.sidebar.button("💪 Muscle Mass Impact"):
+        st.session_state.ms.append({"role": "user", "content": "What is having the most impact on my muscle mass? Compare my protein intake and activity levels to my calculated muscle mass."})
+
+    st.sidebar.header("Step 2: Coaching")
+    if st.sidebar.button("🚀 How do I improve this?"):
+        if st.session_state.ms:
+            prev = st.session_state.ms[-1]["content"]
+            st.session_state.ms.append({"role": "user", "content": f"Based on the analysis of '{prev}', give me a 3-step specific action plan to improve these metrics."})
+        else: st.sidebar.error("Run an analysis first!")
 
     if st.sidebar.button("Logout / Clear Cache"):
-        st.session_state.tk = None
-        st.session_state.cached_data = None
+        st.session_state.tk, st.session_state.cached_data, st.session_state.ms = None, None, []
         st.rerun()
 
-    h = {"Authorization": f"Bearer {st.session_state.tk}"}
-    
-    # ONLY show the button if we don't have data yet
+    # --- DATA WEAVER (90 Days) ---
     if not st.session_state.cached_data:
-        if st.button("🚀 Sync All Health Data (Uses ~95 Credits)"):
-            try:
-                with st.status("Fetching 6-month timeline...", expanded=True) as status:
-                    # --- Vitals (1 request each) ---
-                    steps = requests.get("https://api.fitbit.com/1/user/-/activities/steps/date/today/6m.json", headers=h).json()
-                    weight = requests.get("https://api.fitbit.com/1/user/-/body/weight/date/today/6m.json", headers=h).json()
-                    fat = requests.get("https://api.fitbit.com/1/user/-/body/fat/date/today/6m.json", headers=h).json()
-                    # Sleep (1 request)
-                    sleep = requests.get("https://api.fitbit.com/1.2/user/-/sleep/list.json?afterDate=2024-01-01&limit=100&sort=desc", headers=h).json()
+        if st.button("🔄 Sync & Weave Master Dataset (90 Days)"):
+            with st.status("Weaving 90 days of performance vitals...", expanded=True) as status:
+                h = {"Authorization": f"Bearer {st.session_state.tk}"}
+                try:
+                    # Fetching Time Series
+                    s = requests.get("https://api.fitbit.com/1/user/-/activities/steps/date/today/90d.json", headers=h).json().get('activities-steps', [])
+                    w = requests.get("https://api.fitbit.com/1/user/-/body/weight/date/today/90d.json", headers=h).json().get('body-weight', [])
+                    f = requests.get("https://api.fitbit.com/1/user/-/body/fat/date/today/90d.json", headers=h).json().get('body-fat', [])
+                    cout = requests.get("https://api.fitbit.com/1/user/-/activities/calories/date/today/90d.json", headers=h).json().get('activities-calories', [])
+                    slp_raw = requests.get("https://api.fitbit.com/1.2/user/-/sleep/list.json?afterDate=2024-01-01&limit=50&sort=desc", headers=h).json().get('sleep', [])
 
-                    # --- Macros (90 requests) ---
-                    macro_data = []
-                    progress_bar = st.progress(0)
+                    # Macro Loop with Progress Bar
+                    macros = []
+                    pb = st.progress(0)
+                    for i in range(1, 91):
+                        pb.progress(i/90)
+                        d_str = (datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d')
+                        log = requests.get(f"https://api.fitbit.com/1/user/-/foods/log/date/{d_str}.json", headers=h).json().get('summary', {})
+                        if log and log.get('calories', 0) > 0:
+                            macros.append({"date": d_str, "p": log.get('protein', 0), "f": log.get('fat', 0), "c": log.get('carbs', 0), "in": log.get('calories', 0)})
                     
-                    num_days = 90 
-                    for i in range(1, num_days + 1):
-                        progress = i / num_days
-                        progress_bar.progress(progress)
-                        
-                        date_str = (datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d')
-                        day_log = requests.get(f"https://api.fitbit.com/1/user/-/foods/log/date/{date_str}.json", headers=h).json()
-                        summary = day_log.get('summary', {})
-                        
-                        if summary and summary.get('calories', 0) > 0:
-                            macro_data.append({
-                                "Date": date_str,
-                                "Protein (g)": summary.get('protein', 0),
-                                "Fat (g)": summary.get('fat', 0),
-                                "Carbs (g)": summary.get('carbs', 0),
-                                "Calories": summary.get('calories', 0)
-                            })
-                    
-                    # Store everything in memory
-                    st.session_state.cached_data = {
-                        "steps": steps,
-                        "weight": weight,
-                        "fat": fat,
-                        "sleep": sleep,
-                        "macros": macro_data
-                    }
-                    status.update(label="✅ Sync Complete!", state="complete", expanded=False)
+                    # --- THE WEAVER LOGIC ---
+                    master = {}
+                    def ingest(d_list, key, label, val_key='value'):
+                        for x in d_list:
+                            d = x.get('dateTime') or x.get('date')
+                            if d:
+                                if d not in master: master[d] = {"s":0,"w":0,"f":0,"out":0,"in":0,"p":0,"carb":0,"fat":0,"score":0}
+                                master[d][label] = x.get(val_key, 0)
+
+                    ingest(s, 'value', 's'); ingest(w, 'weight', 'w', 'weight'); ingest(f, 'fat', 'f', 'fat'); ingest(cout, 'value', 'out')
+                    for m in macros:
+                        if m['date'] in master:
+                            master[m['date']].update({"in": m['in'], "p": m['p'], "carb": m['c'], "fat": m['f']})
+                    for sl in slp_raw:
+                        if sl['dateOfSleep'] in master:
+                            master[sl['dateOfSleep']]['score'] = sl.get('efficiency', 0)
+
+                    # Build CSV Table + Muscle Calculation
+                    rows = ["Date,Steps,Weight,Fat%,MuscleMass,CalIn,CalOut,Protein,Carbs,Fat,SleepScore"]
+                    for d in sorted(master.keys(), reverse=True):
+                        v = master[d]
+                        # FORMULA: Weight * (1 - (Fat% / 100))
+                        muscle = round(float(v['w']) * (1 - (float(v['f'])/100)), 2) if float(v['f']) > 0 else 0
+                        rows.append(f"{d},{v['s']},{v['w']},{v['f']},{muscle},{v['in']},{v['out']},{v['p']},{v['carb']},{v['fat']},{v['score']}")
+
+                    st.session_state.cached_data = "\n".join(rows)
+                    status.update(label="✅ Weaving Complete!", state="complete")
                     st.rerun()
-            except Exception as e:
-                st.error(f"Sync failed. You might have hit the hourly limit. Wait 60 mins. Error: {e}")
+                except Exception as e: st.error(f"Sync failed: {e}")
 
-    # 4. DISPLAY THE MEMORY (If it exists)
+    # --- CHAT INTERFACE ---
     if st.session_state.cached_data:
-        data = st.session_state.cached_data
-        st.success("Displaying data from app memory (No new Fitbit credits used).")
+        for m in st.session_state.ms:
+            with st.chat_message(m["role"]): st.markdown(m["content"])
         
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            with st.expander("🥩 90-Day Macro Table", expanded=True):
-                if data["macros"]:
-                    st.table(data["macros"])
-                else:
-                    st.write("No food logs found.")
-            
-            with st.expander("😴 Last 100 Sleep Sessions"):
-                st.json(data["sleep"])
+        if st.session_state.ms and st.session_state.ms[-1]["role"] == "user":
+            if "l_ans" not in st.session_state or st.session_state.l_ans != len(st.session_state.ms):
+                with st.chat_message("assistant"):
+                    with st.spinner("Performance Coach is analyzing..."):
+                        ans = ask_ai(st.session_state.cached_data, st.session_state.ms[-1]["content"])
+                        st.markdown(ans)
+                        st.session_state.ms.append({"role": "assistant", "content": ans})
+                        st.session_state.l_ans = len(st.session_state.ms)
 
-        with col2:
-            with st.expander("⚖️ 6-Month Weight & Fat"):
-                st.json(data["weight"])
-                st.json(data["fat"])
-            
-            with st.expander("🚶 6-Month Activity"):
-                st.json(data["steps"])
+        if p := st.chat_input("Ask a follow-up question..."):
+            st.session_state.ms.append({"role": "user", "content": p})
+            st.rerun()
 
 else:
-    # Login Link
-    scope = "activity%20heartrate%20nutrition%20profile%20sleep%20weight"
-    link = f"https://www.fitbit.com/oauth2/authorize?response_type=code&client_id={CID}&scope={scope}&redirect_uri={URI}"
-    st.markdown(f"### [🔗 Connect Fitbit]({link})")
+    url = f"https://www.fitbit.com/oauth2/authorize?response_type=code&client_id={CID}&scope=activity%20heartrate%20nutrition%20profile%20sleep%20weight&redirect_uri={URI}"
+    st.markdown(f"### [🔗 Connect Performance Coach]({url})")
 
 # --- END OF APP ---
