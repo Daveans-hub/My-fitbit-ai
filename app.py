@@ -23,19 +23,32 @@ def ask_ai(ctx, q):
 # 3. PAGE SETUP & STYLING
 st.set_page_config(page_title="Performance AI", layout="wide")
 
-# Custom CSS for Aquamarine Sidebar and Uniform Buttons
+# Custom CSS for Deep Sky Blue Sidebar and Forced Uniform Buttons
 st.markdown("""
     <style>
+        /* Sidebar Color */
         [data-testid="stSidebar"] {
-            background-color: #7FFFD4;
+            background-color: #00BFFF;
         }
-        .stButton>button {
-            width: 100%;
-            border-radius: 5px;
-            height: 3em;
+        /* Force Buttons to be equal width and centered */
+        div.stButton > button {
+            width: 100% !important;
+            display: block;
+            margin-left: auto;
+            margin-right: auto;
+            border-radius: 8px;
+            height: 3.5em;
             background-color: white;
             color: black;
-            border: 1px solid #ccc;
+            font-weight: bold;
+            border: 2px solid rgba(0,0,0,0.1);
+        }
+        /* Section Header Styling */
+        .sidebar-header {
+            font-size: 1.2rem;
+            font-weight: bold;
+            margin-top: 1rem;
+            color: #0d1117;
         }
     </style>
     """, unsafe_allow_html=True)
@@ -61,9 +74,10 @@ if "code" in qp and not st.session_state.tk:
 # 5. MAIN APP
 if st.session_state.tk:
     # --- SIDEBAR ---
-    st.sidebar.title("Coach Control")
+    st.sidebar.markdown("<div class='sidebar-header'>Coach Control</div>", unsafe_allow_html=True)
+    st.sidebar.success("✅ Fitbit Linked")
     
-    st.sidebar.subheader("Step 1. Trends")
+    st.sidebar.markdown("<div class='sidebar-header'>Step 1. Let's look at trends</div>", unsafe_allow_html=True)
     if st.sidebar.button("⚖️ Weight & Fat% Impact"):
         st.session_state.ms.append({"role": "user", "content": "What is having the most impact on my weight and body fat %? Analyze calories in/out, steps, and macronutrient trends."})
     
@@ -73,7 +87,7 @@ if st.session_state.tk:
     if st.sidebar.button("💪 Muscle Mass Impact"):
         st.session_state.ms.append({"role": "user", "content": "What is having the most impact on my muscle mass? Compare protein/activity to my calculated lean mass."})
 
-    st.sidebar.subheader("Step 2. Coaching")
+    st.sidebar.markdown("<div class='sidebar-header'>Step 2. Coaching</div>", unsafe_allow_html=True)
     if st.sidebar.button("🚀 How do I improve this?"):
         if st.session_state.ms:
             prev = st.session_state.ms[-1]["content"]
@@ -90,19 +104,17 @@ if st.session_state.tk:
     st.title("🔬 Total Performance Analyst")
 
     if not st.session_state.cached_data:
-        st.info("Your dashboard is empty. We need to weave your 90-day history.")
+        st.info("Syncing required to build your 90-day performance matrix.")
         if st.button("🔄 Sync & Weave Master Dataset"):
             with st.status("Fetching performance vitals...", expanded=True) as status:
                 h = {"Authorization": f"Bearer {st.session_state.tk}"}
                 try:
-                    # Fetching
                     s = requests.get("https://api.fitbit.com/1/user/-/activities/steps/date/today/90d.json", headers=h).json().get('activities-steps', [])
                     w = requests.get("https://api.fitbit.com/1/user/-/body/weight/date/today/90d.json", headers=h).json().get('body-weight', [])
                     f = requests.get("https://api.fitbit.com/1/user/-/body/fat/date/today/90d.json", headers=h).json().get('body-fat', [])
                     cout = requests.get("https://api.fitbit.com/1/user/-/activities/calories/date/today/90d.json", headers=h).json().get('activities-calories', [])
                     slp_raw = requests.get("https://api.fitbit.com/1.2/user/-/sleep/list.json?afterDate=2024-01-01&limit=50&sort=desc", headers=h).json().get('sleep', [])
 
-                    # Macro Loop
                     macros = []
                     pb = st.progress(0)
                     for i in range(1, 91):
@@ -112,7 +124,6 @@ if st.session_state.tk:
                         if log and log.get('calories', 0) > 0:
                             macros.append({"date": d_str, "p": log.get('protein', 0), "f": log.get('fat', 0), "c": log.get('carbs', 0), "in": log.get('calories', 0)})
                     
-                    # WEAVER
                     master = {}
                     def ingest(d_list, key, label, val_key='value'):
                         for x in d_list:
@@ -146,11 +157,11 @@ if st.session_state.tk:
         if st.session_state.ms and st.session_state.ms[-1]["role"] == "user":
             if "l_ans" not in st.session_state or st.session_state.l_ans != len(st.session_state.ms):
                 with st.chat_message("assistant"):
-                    with st.spinner("Coach is analyzing..."):
+                    with st.spinner("Performance Coach is analyzing..."):
                         ans = ask_ai(st.session_state.cached_data, st.session_state.ms[-1]["content"])
                         st.markdown(ans)
                         st.session_state.ms.append({"role": "assistant", "content": ans})
-                        st.session_state.l_ans = len(st.session_state.ms)
+                        st.session_state.last_ans = len(st.session_state.ms)
 
         if p := st.chat_input("Ask a follow-up question..."):
             st.session_state.ms.append({"role": "user", "content": p})
