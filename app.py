@@ -1,13 +1,14 @@
 import streamlit as st
 import requests
 import base64
+from datetime import datetime, timedelta
 
 # 1. SETUP SECRETS
 CID, SEC, URI = st.secrets["FITBIT_CLIENT_ID"], st.secrets["FITBIT_CLIENT_SECRET"], st.secrets["YOUR_SITE_URL"]
 
-st.set_page_config(page_title="Fitbit Raw Data Sync", layout="wide")
+st.set_page_config(page_title="Fitbit Data Sync", layout="wide")
 st.title("📡 Fitbit Raw Data Diagnostic")
-st.write("Fetching 6 months of Vitals + Macronutrients (Protein, Carbs, Fats).")
+st.write("Steps/Weight/Calories: **6 Months** | Detailed Macros: **Last 30 Days**")
 
 if "tk" not in st.session_state: st.session_state.tk = None
 
@@ -35,59 +36,59 @@ if st.session_state.tk:
 
     h = {"Authorization": f"Bearer {st.session_state.tk}"}
     
-    if st.button("🔄 Pull 6 Months of Raw Data (Including Macros)"):
-        with st.spinner("Fetching full 180-day history..."):
+    if st.button("🔄 Pull All Health Data"):
+        with st.spinner("Fetching 6 months of vitals + 30 days of macros..."):
             try:
-                # --- Vitals & Activity ---
+                # --- TIMELINES (6 Months) ---
                 steps = requests.get("https://api.fitbit.com/1/user/-/activities/steps/date/today/6m.json", headers=h).json()
                 weight = requests.get("https://api.fitbit.com/1/user/-/body/weight/date/today/6m.json", headers=h).json()
                 fat = requests.get("https://api.fitbit.com/1/user/-/body/fat/date/today/6m.json", headers=h).json()
-                
-                # --- Nutrition (Calories + Macros) ---
                 cal_in = requests.get("https://api.fitbit.com/1/user/-/foods/log/caloriesIn/date/today/6m.json", headers=h).json()
-                prot = requests.get("https://api.fitbit.com/1/user/-/foods/log/protein/date/today/6m.json", headers=h).json()
-                fat_nut = requests.get("https://api.fitbit.com/1/user/-/foods/log/fat/date/today/6m.json", headers=h).json()
-                carb = requests.get("https://api.fitbit.com/1/user/-/foods/log/carbs/date/today/6m.json", headers=h).json()
                 
-                # --- Sleep ---
-                sleep = requests.get("https://api.fitbit.com/1.2/user/-/sleep/list.json?afterDate=2024-01-01&limit=50&sort=desc", headers=h).json()
+                # --- MACRO LOOP (Last 30 Days) ---
+                # Fitbit doesn't have a Macro Timeline, so we fetch day-by-day for the last month
+                macro_data = []
+                for i in range(30):
+                    date_str = (datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d')
+                    day_log = requests.get(f"https://api.fitbit.com/1/user/-/foods/log/date/{date_str}.json", headers=h).json()
+                    summary = day_log.get('summary', {})
+                    if summary:
+                        macro_data.append({
+                            "date": date_str,
+                            "protein": summary.get('protein', 0),
+                            "fat": summary.get('fat', 0),
+                            "carbs": summary.get('carbs', 0),
+                            "calories": summary.get('calories', 0)
+                        })
 
                 # DISPLAY RAW DATA
-                st.subheader("Raw Data Verification")
+                st.subheader("Results")
                 
-                col1, col2, col3 = st.columns(3)
+                col1, col2 = st.columns(2)
                 
                 with col1:
-                    with st.expander("⚖️ Weight & Fat %"):
-                        st.write("Weight History:")
+                    with st.expander("⚖️ 6 Months: Weight & Body Fat"):
                         st.json(weight)
-                        st.write("Body Fat History:")
                         st.json(fat)
+                    with st.expander("🥩 30 Days: Detailed Macros (Protein/Fat/Carbs)"):
+                        st.write("Daily gram totals for the last 30 days:")
+                        st.table(macro_data)
 
                 with col2:
-                    with st.expander("🚶 Activity & Sleep"):
-                        st.write("Steps History:")
+                    with st.expander("🚶 6 Months: Activity & Calories In"):
+                        st.write("Steps Timeline:")
                         st.json(steps)
-                        st.write("Sleep Logs:")
-                        st.json(sleep)
-
-                with col3:
-                    with st.expander("🥩 Macronutrients & Calories"):
-                        st.write("Protein (grams):")
-                        st.json(prot)
-                        st.json(carb)
-                        st.write("Fats (grams):")
-                        st.json(fat_nut)
-                        st.write("Total Calories In:")
+                        st.write("Calories Consumed Timeline:")
                         st.json(cal_in)
                 
-                st.success("All data points retrieved!")
+                st.success("Successfully pulled all variables!")
                 
             except Exception as e:
                 st.error(f"Error fetching data: {e}")
 
 else:
-    url = f"https://www.fitbit.com/oauth2/authorize?response_type=code&client_id={CID}&scope=activity%20heartrate%20nutrition%20profile%20sleep%20weight&redirect_uri={URI}"
+    scope = "activity%20heartrate%20nutrition%20profile%20sleep%20weight"
+    link = f"https://www.fitbit.com/oauth2/authorize?response_type=code&client_id={CID}&scope={scope}&redirect_uri={URI}"
     st.markdown(f"### [🔗 Connect Fitbit]({url})")
 
 # --- END OF APP ---
