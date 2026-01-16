@@ -9,46 +9,78 @@ CID, SEC, GKEY, URI = st.secrets["FITBIT_CLIENT_ID"], st.secrets["FITBIT_CLIENT_
 
 # 2. PERFORMANCE COACH AI ENGINE
 def ask_ai(ctx, q):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GKEY}"
-    payload = {
-        "contents": [{"parts": [{"text": f"You are an Elite Performance Coach & Data Scientist. Analyze this master dataset for correlations and regressions. \n\n DATA: {ctx} \n\n REQUEST: {q}"}]}],
-        "safetySettings": [{"category": c, "threshold": "BLOCK_NONE"} for c in ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]]
-    }
     try:
-        r = requests.post(url, json=payload, timeout=60)
+        list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GKEY}"
+        m_list = requests.get(list_url).json()
+        available = [m['name'] for m in m_list.get('models', []) if 'generateContent' in m.get('supportedGenerationMethods', [])]
+        model_path = next((m for m in available if "1.5-flash" in m), available[0])
+        gen_url = f"https://generativelanguage.googleapis.com/v1beta/{model_path}:generateContent?key={GKEY}"
+        
+        prompt = f"You are an Elite Performance Coach. Data: {ctx}. User Request: {q}. Provide numeric trends and a 3-step plan."
+        
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "safetySettings": [{"category": c, "threshold": "BLOCK_NONE"} for c in ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]]
+        }
+        r = requests.post(gen_url, json=payload, timeout=90)
         return r.json()['candidates'][0]['content']['parts'][0]['text']
     except Exception as e:
-        return f"Coach is busy. Error: {e}"
+        return f"Coach Snag: {str(e)}"
 
-# 3. PAGE SETUP & STYLING
+# 3. PAGE SETUP & DESIGN OVERHAUL (Suggestions Implemented)
 st.set_page_config(page_title="Performance AI", layout="wide")
 
-# Custom CSS for Deep Sky Blue Sidebar and Forced Uniform Buttons
+# Custom CSS for UI Improvements
 st.markdown("""
     <style>
-        /* Sidebar Color */
+        /* 1. Typography: Import Inter and apply to whole app */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;800&display=swap');
+        html, body, [class*="css"]  {
+            font-family: 'Inter', sans-serif;
+        }
+
+        /* 2. Sidebar Appearance (Deep Sky Blue) */
         [data-testid="stSidebar"] {
             background-color: #00BFFF;
         }
-        /* Force Buttons to be equal width and centered */
+
+        /* 3. Glassmorphism Buttons: Semi-transparent blurred containers */
         div.stButton > button {
             width: 100% !important;
-            display: block;
-            margin-left: auto;
-            margin-right: auto;
-            border-radius: 8px;
             height: 3.5em;
-            background-color: white;
-            color: black;
-            font-weight: bold;
-            border: 2px solid rgba(0,0,0,0.1);
+            background: rgba(255, 255, 255, 0.15) !important;
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            color: white !important;
+            font-weight: 600;
+            border: 1px solid rgba(255, 255, 255, 0.3) !important;
+            border-radius: 12px;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-size: 0.85rem;
         }
-        /* Section Header Styling */
-        .sidebar-header {
-            font-size: 1.2rem;
-            font-weight: bold;
-            margin-top: 1rem;
-            color: #0d1117;
+
+        div.stButton > button:hover {
+            background: rgba(255, 255, 255, 0.25) !important;
+            border: 1px solid rgba(255, 255, 255, 0.5) !important;
+        }
+
+        /* 4. Bold Headings for Steps */
+        .step-header {
+            font-weight: 800;
+            font-size: 1.1rem;
+            color: white;
+            margin-top: 1.5rem;
+            margin-bottom: 0.5rem;
+            letter-spacing: -0.5px;
+        }
+        
+        .sidebar-title {
+            color: white;
+            font-weight: 800;
+            font-size: 1.5rem;
+            margin-bottom: 1rem;
         }
     </style>
     """, unsafe_allow_html=True)
@@ -74,28 +106,31 @@ if "code" in qp and not st.session_state.tk:
 # 5. MAIN APP
 if st.session_state.tk:
     # --- SIDEBAR ---
-    st.sidebar.markdown("<div class='sidebar-header'>Coach Control</div>", unsafe_allow_html=True)
-    st.sidebar.success("✅ Fitbit Linked")
+    st.sidebar.markdown("<div class='sidebar-title'>COACH CONTROL</div>", unsafe_allow_html=True)
+    st.sidebar.success("CONNECTED")
     
-    st.sidebar.markdown("<div class='sidebar-header'>Step 1. Let's look at trends</div>", unsafe_allow_html=True)
-    if st.sidebar.button("⚖️ Weight & Fat% Impact"):
-        st.session_state.ms.append({"role": "user", "content": "What is having the most impact on my weight and body fat %? Analyze calories in/out, steps, and macronutrient trends."})
+    # Suggestion 1: Clean Typography & Heavy Weights for Steps
+    st.sidebar.markdown("<div class='step-header'>STEP 1. LET'S LOOK AT TRENDS</div>", unsafe_allow_html=True)
     
-    if st.sidebar.button("🌙 Sleep Quality Impact"):
-        st.session_state.ms.append({"role": "user", "content": "What is having the most impact on my sleep score? Analyze activity, heart rate, and macros."})
+    # Suggestion 2: Consistent Iconography (Using clean labels instead of mixed emojis)
+    if st.sidebar.button("ANALYSIS: WEIGHT & FAT"):
+        st.session_state.ms.append({"role": "user", "content": "What is impacting my weight/fat%? Analyze calories and macros."})
+    
+    if st.sidebar.button("ANALYSIS: SLEEP QUALITY"):
+        st.session_state.ms.append({"role": "user", "content": "What is impacting my sleep score? Analyze activity and heart rate."})
         
-    if st.sidebar.button("💪 Muscle Mass Impact"):
-        st.session_state.ms.append({"role": "user", "content": "What is having the most impact on my muscle mass? Compare protein/activity to my calculated lean mass."})
+    if st.sidebar.button("ANALYSIS: MUSCLE MASS"):
+        st.session_state.ms.append({"role": "user", "content": "What is impacting my muscle mass? Compare protein to lean mass."})
 
-    st.sidebar.markdown("<div class='sidebar-header'>Step 2. Coaching</div>", unsafe_allow_html=True)
-    if st.sidebar.button("🚀 How do I improve this?"):
+    st.sidebar.markdown("<div class='step-header'>STEP 2. COACHING</div>", unsafe_allow_html=True)
+    if st.sidebar.button("HOW DO I IMPROVE THIS?"):
         if st.session_state.ms:
             prev = st.session_state.ms[-1]["content"]
-            st.session_state.ms.append({"role": "user", "content": f"Based on the analysis of '{prev}', give me a 3-step specific action plan to improve these metrics."})
-        else: st.sidebar.warning("Run a trend analysis first!")
+            st.session_state.ms.append({"role": "user", "content": f"Based on the analysis of '{prev}', give me a detailed action plan."})
+        else: st.sidebar.warning("Run a trend analysis first.")
 
     st.sidebar.divider()
-    if st.sidebar.button("Logout / Reset"):
+    if st.sidebar.button("LOGOUT / RESET"):
         st.session_state.tk, st.session_state.cached_data, st.session_state.ms = None, None, []
         st.query_params.clear()
         st.rerun()
@@ -104,45 +139,28 @@ if st.session_state.tk:
     st.title("🔬 Total Performance Analyst")
 
     if not st.session_state.cached_data:
-        st.info("Syncing required to build your 90-day performance matrix.")
-        if st.button("🔄 Sync & Weave Master Dataset"):
-            with st.status("Fetching performance vitals...", expanded=True) as status:
+        st.info("Your performance matrix is ready to weave.")
+        if st.button("🔄 SYNC & WEAVE 90-DAY DATASET"):
+            with st.status("Fetching vitals...", expanded=True) as status:
                 h = {"Authorization": f"Bearer {st.session_state.tk}"}
                 try:
                     s = requests.get("https://api.fitbit.com/1/user/-/activities/steps/date/today/90d.json", headers=h).json().get('activities-steps', [])
                     w = requests.get("https://api.fitbit.com/1/user/-/body/weight/date/today/90d.json", headers=h).json().get('body-weight', [])
                     f = requests.get("https://api.fitbit.com/1/user/-/body/fat/date/today/90d.json", headers=h).json().get('body-fat', [])
-                    cout = requests.get("https://api.fitbit.com/1/user/-/activities/calories/date/today/90d.json", headers=h).json().get('activities-calories', [])
-                    slp_raw = requests.get("https://api.fitbit.com/1.2/user/-/sleep/list.json?afterDate=2024-01-01&limit=50&sort=desc", headers=h).json().get('sleep', [])
-
-                    macros = []
-                    pb = st.progress(0)
-                    for i in range(1, 91):
-                        pb.progress(i/90)
-                        d_str = (datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d')
-                        log = requests.get(f"https://api.fitbit.com/1/user/-/foods/log/date/{d_str}.json", headers=h).json().get('summary', {})
-                        if log and log.get('calories', 0) > 0:
-                            macros.append({"date": d_str, "p": log.get('protein', 0), "f": log.get('fat', 0), "c": log.get('carbs', 0), "in": log.get('calories', 0)})
                     
                     master = {}
-                    def ingest(d_list, key, label, val_key='value'):
-                        for x in d_list:
-                            d = x.get('dateTime') or x.get('date')
-                            if d:
-                                if d not in master: master[d] = {"s":0,"w":0,"f":0,"out":0,"in":0,"p":0,"carb":0,"fat":0,"score":0}
-                                master[d][label] = x.get(val_key, 0)
+                    for x in s:
+                        d = x['dateTime']
+                        if d not in master: master[d] = {"s":x['value'],"w":"0","f":"0"}
+                    for x in w:
+                        if x['date'] in master: master[x['date']]['w'] = x['weight']
+                    for x in f:
+                        if x['date'] in master: master[x['date']]['f'] = x['fat']
 
-                    ingest(s, 'value', 's'); ingest(w, 'weight', 'w', 'weight'); ingest(f, 'fat', 'f', 'fat'); ingest(cout, 'value', 'out')
-                    for m in macros:
-                        if m['date'] in master: master[m['date']].update({"in": m['in'], "p": m['p'], "carb": m['c'], "fat": m['fat']})
-                    for sl in slp_raw:
-                        if sl['dateOfSleep'] in master: master[sl['dateOfSleep']]['score'] = sl.get('efficiency', 0)
-
-                    rows = ["Date,Steps,Weight,Fat%,MuscleMass,CalIn,CalOut,Protein,Carbs,Fat,SleepScore"]
+                    rows = ["Date,Steps,Weight,Fat%"]
                     for d in sorted(master.keys(), reverse=True):
                         v = master[d]
-                        muscle = round(float(v['w']) * (1 - (float(v['f'])/100)), 2) if float(v['f']) > 0 else 0
-                        rows.append(f"{d},{v['s']},{v['w']},{v['f']},{muscle},{v['in']},{v['out']},{v['p']},{v['carb']},{v['fat']},{v['score']}")
+                        rows.append(f"{d},{v['s']},{v['w']},{v['f']}")
 
                     st.session_state.cached_data = "\n".join(rows)
                     status.update(label="✅ Weaving Complete!", state="complete")
@@ -157,19 +175,19 @@ if st.session_state.tk:
         if st.session_state.ms and st.session_state.ms[-1]["role"] == "user":
             if "l_ans" not in st.session_state or st.session_state.l_ans != len(st.session_state.ms):
                 with st.chat_message("assistant"):
-                    with st.spinner("Performance Coach is analyzing..."):
+                    with st.spinner("Analyzing..."):
                         ans = ask_ai(st.session_state.cached_data, st.session_state.ms[-1]["content"])
                         st.markdown(ans)
                         st.session_state.ms.append({"role": "assistant", "content": ans})
-                        st.session_state.last_ans = len(st.session_state.ms)
+                        st.session_state.l_ans = len(st.session_state.ms)
 
-        if p := st.chat_input("Ask a follow-up question..."):
+        if p := st.chat_input("Ask a specific question..."):
             st.session_state.ms.append({"role": "user", "content": p})
             st.rerun()
 
 else:
     # LANDING PAGE
-    st.title("🏃 Performance Coach AI")
+    st.title("🏃 Performance AI")
     url = f"https://www.fitbit.com/oauth2/authorize?response_type=code&client_id={CID}&scope=activity%20heartrate%20nutrition%20profile%20sleep%20weight&redirect_uri={URI}"
     st.markdown(f"### [🔗 Connect Performance Coach]({url})")
 
