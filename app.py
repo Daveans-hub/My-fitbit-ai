@@ -16,12 +16,15 @@ def ask_ai(ctx, q):
         gen_url = f"https://generativelanguage.googleapis.com/v1beta/{model_path}:generateContent?key={GKEY}"
         
         prompt = f"""
-        You are an Elite Performance Coach. Analyze the health metrics below.
+        You are an Elite Performance Coach. Analyze the health metrics provided in the CSV table.
         
-        CRITICAL INSTRUCTIONS:
-        - Muscle Mass = Weight * (1 - (Fat% / 100)). Use this to answer muscle-related questions.
-        - Look for trends (e.g. 'Your weight drops 2 days after your highest step count').
-        - If a metric is missing (0), ignore it for that specific trend but analyze what IS there.
+        CRITICAL MATH:
+        - Muscle Mass = Weight * (1 - (Fat% / 100)). Use this to analyze lean mass trends.
+        
+        DATA INTERPRETATION:
+        - A '0' in any column means the user did not log that specific metric that day.
+        - Look for correlations (e.g., 'On days with 15k+ steps, REM sleep increases').
+        - Be numeric, direct, and aggressive in finding trends.
         
         DATASET:
         {ctx}
@@ -30,12 +33,12 @@ def ask_ai(ctx, q):
         {q}
         """
         
-        payload = {"contents": [{"parts": [{"text": prompt}]}]}
+        payload = {"contents": [{"parts": [{"text": prompt}]}], "safetySettings": [{"category": c, "threshold": "BLOCK_NONE"} for c in ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]]}
         r = requests.post(gen_url, json=payload, timeout=90)
         res = r.json()
         if "candidates" in res:
             return res["candidates"][0]["content"]["parts"][0]["text"]
-        return f"AI Snag: {res}"
+        return f"AI Error: {res}"
     except Exception as e:
         return f"System Error: {str(e)}"
 
@@ -63,29 +66,30 @@ if "code" in qp and not st.session_state.tk:
 
 # 5. MAIN APP
 if st.session_state.tk:
-    st.sidebar.success("✅ Fitbit Data Stream Active")
+    st.sidebar.success("✅ Fitbit Data Link Active")
     st.sidebar.divider()
     
+    # --- SIDEBAR BUTTONS ---
     st.sidebar.header("Step 1: Trend Analysis")
     if st.sidebar.button("⚖️ What's impacting my Weight/Fat%?"):
-        st.session_state.ms.append({"role": "user", "content": "What is having the most impact on my weight and body fat %? Analyze my calories in/out and activity trends."})
+        st.session_state.ms.append({"role": "user", "content": "What is having the most impact on my weight and body fat %? Analyze my calories, steps, and macronutrients."})
     
     if st.sidebar.button("🌙 What's impacting my Sleep?"):
         st.session_state.ms.append({"role": "user", "content": "What is having the most impact on my sleep? Analyze my activity, heart rate, and macro correlations."})
         
     if st.sidebar.button("💪 What's impacting my Muscle Mass?"):
-        st.session_state.ms.append({"role": "user", "content": "What is having the most impact on my muscle mass? Compare my protein intake and activity levels to my calculated muscle mass logs."})
+        st.session_state.ms.append({"role": "user", "content": "What is having the most impact on my muscle mass? Compare my protein intake and activity to my calculated muscle mass."})
 
     st.sidebar.header("Step 2: Action Plan")
     if st.sidebar.button("🚀 How do I improve this?"):
         if st.session_state.ms:
             topic = st.session_state.ms[-1]["content"]
-            st.session_state.ms.append({"role": "user", "content": f"Based on the analysis of '{topic}', how do I improve this? Give me a highly specific 3-step action plan."})
-        else: st.sidebar.warning("Run analysis first.")
+            st.session_state.ms.append({"role": "user", "content": f"Based on the analysis of '{topic}', how do I improve this? Give me a highly specific action plan."})
+        else: st.sidebar.warning("Run an analysis first.")
 
     st.sidebar.header("Step 3: Deep Correlations")
     if st.sidebar.button("🍗 Protein vs Muscle Gains"):
-        st.session_state.ms.append({"role": "user", "content": "Analyze the relationship between my protein intake and my muscle mass logs. Am I eating enough protein to see gains?"})
+        st.session_state.ms.append({"role": "user", "content": "Analyze the relationship between my protein intake and my muscle mass. Am I eating enough protein to see gains?"})
     
     if st.sidebar.button("🚶 Steps vs Deep Sleep"):
         st.session_state.ms.append({"role": "user", "content": "Compare my deep sleep minutes to my daily step count. Do I get more deep sleep on days when I walk over 15,000 steps?"})
@@ -96,51 +100,51 @@ if st.session_state.tk:
     st.sidebar.divider()
     if st.sidebar.button("Logout"):
         st.session_state.tk, st.session_state.data, st.session_state.ms = None, None, []
-        st.query_params.clear()
         st.rerun()
 
-    # --- DATA WEAVER (Fixed to find Weight/Fat/Macro keys) ---
+    # --- DATA FOUNDRY (The fix for empty rows) ---
     if not st.session_state.data:
         if st.button("🔄 Sync Total Performance History"):
-            with st.spinner("Analyzing 90 days of performance vitals..."):
+            with st.spinner("Weaving health data timeline..."):
                 h = {"Authorization": f"Bearer {st.session_state.tk}"}
                 try:
-                    # 1. Fetch Raw Data
+                    # 1. Fetch Raw Lists
                     s = requests.get("https://api.fitbit.com/1/user/-/activities/steps/date/today/90d.json", headers=h).json().get('activities-steps', [])
                     w = requests.get("https://api.fitbit.com/1/user/-/body/weight/date/today/90d.json", headers=h).json().get('body-weight', [])
                     f = requests.get("https://api.fitbit.com/1/user/-/body/fat/date/today/90d.json", headers=h).json().get('body-fat', [])
                     cin = requests.get("https://api.fitbit.com/1/user/-/foods/log/caloriesIn/date/today/90d.json", headers=h).json().get('foods-log-caloriesIn', [])
-                    prot = requests.get("https://api.fitbit.com/1/user/-/foods/log/protein/date/today/90d.json", headers=h).json().get('foods-log-protein', [])
+                    prt = requests.get("https://api.fitbit.com/1/user/-/foods/log/protein/date/today/90d.json", headers=h).json().get('foods-log-protein', [])
+                    crb = requests.get("https://api.fitbit.com/1/user/-/foods/log/carbs/date/today/90d.json", headers=h).json().get('foods-log-carbs', [])
                     slp_r = requests.get("https://api.fitbit.com/1.2/user/-/sleep/list.json?afterDate=2024-01-01&limit=30&sort=desc", headers=h).json().get('sleep', [])
 
-                    # 2. Extract into Master Timeline
+                    # 2. Master Map (Date -> Values)
                     master = {}
-                    def weave(data_list, key_to_read, master_label):
+                    
+                    def ingest(data_list, key_name, val_key):
                         for entry in data_list:
-                            # Fitbit uses 'dateTime' for activity but 'date' for weight
                             d = entry.get('dateTime') or entry.get('date')
                             if d:
-                                if d not in master: master[d] = {"s":"0","w":"0","f":"0","cal":"0","p":"0"}
-                                # Key mapping: Weight uses 'weight', Fat uses 'fat', others use 'value'
-                                val = entry.get(key_to_read) or entry.get('value', 0)
-                                master[d][master_label] = str(val)
+                                if d not in master: master[d] = {"s":"0","w":"0","f":"0","cal":"0","p":"0","c":"0"}
+                                master[d][key_name] = str(entry.get(val_key, 0))
 
-                    weave(s, 'value', 's')
-                    weave(w, 'weight', 'w')
-                    weave(f, 'fat', 'f')
-                    weave(cin, 'value', 'cal')
-                    weave(prot, 'value', 'p')
+                    # Map each endpoint to its specific value key
+                    ingest(s, "s", "value")
+                    ingest(w, "w", "weight")
+                    ingest(f, "f", "fat")
+                    ingest(cin, "cal", "value")
+                    ingest(prt, "p", "value")
+                    ingest(crb, "c", "value")
 
-                    # Build the Matrix
-                    rows = ["Date,Steps,Weight,Fat%,Calories,Protein"]
+                    # 3. Build CSV Table
+                    rows = ["Date,Steps,Weight,Fat%,Calories,Protein,Carbs"]
                     for d in sorted(master.keys(), reverse=True):
                         v = master[d]
-                        rows.append(f"{d},{v['s']},{v['w']},{v['f']},{v['cal']},{v['p']}")
+                        rows.append(f"{d},{v['s']},{v['w']},{v['f']},{v['cal']},{v['p']},{v['c']}")
                     
-                    slp_clean = [{"date": x['dateOfSleep'], "deep": x['levels']['summary'].get('deep',{}).get('minutes',0), "total": x['minutesAsleep']} for x in slp_r]
+                    slp_cl = [{"date": x['dateOfSleep'], "deep": x['levels']['summary'].get('deep',{}).get('minutes',0), "total": x['minutesAsleep']} for x in slp_r]
                     
-                    st.session_state.data = {"matrix": "\n".join(rows[:60]), "sleep_logs": slp_clean}
-                    st.success("Analysis Ready! Choose a button in the sidebar.")
+                    st.session_state.data = {"matrix": "\n".join(rows[:60]), "sleep_logs": slp_cl}
+                    st.success("All data weaved! Ready for analysis.")
                     st.rerun()
                 except Exception as e: st.error(f"Sync failed: {e}")
 
