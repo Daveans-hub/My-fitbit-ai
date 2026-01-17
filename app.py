@@ -10,41 +10,43 @@ CID, SEC, GKEY, URI = st.secrets["FITBIT_CLIENT_ID"], st.secrets["FITBIT_CLIENT_
 # 2. AUTO-DISCOVERY AI ENGINE
 def ask_ai(ctx, q):
     try:
-        # STEP A: Ask Google which models are allowed for this key right now
-        # We try the stable 'v1' first
+        # Discovery: Find working models for this specific account
         list_url = f"https://generativelanguage.googleapis.com/v1/models?key={GKEY}"
-        model_list = requests.get(list_url).json()
+        m_list = requests.get(list_url).json()
+        available = [m['name'] for m in m_list.get('models', []) if 'generateContent' in m.get('supportedGenerationMethods', [])]
         
-        # Filter for models that support generating content
-        available = [m['name'] for m in model_list.get('models', []) if 'generateContent' in m.get('supportedGenerationMethods', [])]
-        
-        if not available:
-            return "AI Snag: No models found. Check your API key in Google AI Studio."
-
-        # STEP B: Pick the best available model (Prefer 1.5 Flash, then 1.0 Pro)
+        # Selection: Prefer 1.5 Flash
         model_path = next((m for m in available if "1.5-flash" in m), available[0])
-        
-        # STEP C: Execute using the discovered path
         gen_url = f"https://generativelanguage.googleapis.com/v1/{model_path}:generateContent?key={GKEY}"
         
-        prompt = f"You are the Kinetic Lab AI Coach. Data: {ctx}. Request: {q}. Provide numeric trends and a 3-step action plan."
+        prompt = f"""
+        You are the Kinetic Lab AI Coach. 
+        Analyze the following 180-day performance matrix:
+        {ctx}
+        
+        User Request: {q}
+        
+        INSTRUCTIONS:
+        - Calculate Muscle Mass = Weight * (1 - (Fat% / 100)).
+        - Analyze the relationship between Calories In (CalIn) and Calories Out (CalOut).
+        - Be specific, numeric, and provide a 3-step action plan.
+        """
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "safetySettings": [{"category": c, "threshold": "BLOCK_NONE"} for c in ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]]
         }
-        
         r = requests.post(gen_url, json=payload, timeout=90)
         return r.json()['candidates'][0]['content']['parts'][0]['text']
     except Exception as e: return f"Coach Snag: {str(e)}"
 
-# 3. GLOBAL STYLING (Professional Dark + Pure White Text)
+# 3. HIGH-CONTRAST UI STYLING (#FFFFFF White Text)
 st.set_page_config(page_title="Kinetic Lab", layout="wide")
 
 st.markdown(f"""
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&display=swap');
         
-        .stApp {{
+        .stApp, [data-testid="stAppViewContainer"] {{
             background-color: #0F172A !important;
             font-family: 'Inter', sans-serif;
         }}
@@ -60,7 +62,7 @@ st.markdown(f"""
             min-width: 320px !important;
         }}
 
-        /* Uniform Buttons & Glassmorphism */
+        /* Equal Button Widths & Glassmorphism */
         .stButton button {{
             width: 100% !important;
             display: block !important;
@@ -96,7 +98,7 @@ if "tk" not in st.session_state: st.session_state.tk = None
 if "cached_data" not in st.session_state: st.session_state.cached_data = None
 if "ms" not in st.session_state: st.session_state.ms = []
 
-# 4. LOGIN
+# 4. LOGIN LOGIC
 qp = st.query_params
 if "code" in qp and not st.session_state.tk:
     try:
@@ -110,7 +112,7 @@ if "code" in qp and not st.session_state.tk:
             st.rerun()
     except: st.error("Login failed.")
 
-# 5. MAIN APP (LOGGED IN)
+# 5. MAIN APP
 if st.session_state.tk:
     # --- SIDEBAR ---
     st.sidebar.markdown("<h2 style='font-weight: 800;'>KINETIC LAB</h2>", unsafe_allow_html=True)
@@ -118,23 +120,22 @@ if st.session_state.tk:
     
     st.sidebar.markdown("<div class='step-header'>Step 1. Looking at trends</div>", unsafe_allow_html=True)
     if st.sidebar.button("Weight & Fat Impact"):
-        st.session_state.ms.append({"role": "user", "content": "What is having the most impact on my weight and body fat %? Analyze calories, steps, and fat % trends."})
+        st.session_state.ms.append({"role": "user", "content": "What is having the most impact on my weight and fat %? Analyze calories in/out and steps."})
     if st.sidebar.button("Sleep Quality Impact"):
-        st.session_state.ms.append({"role": "user", "content": "What is having the most impact on my sleep score? Analyze activity and heart rate."})
+        st.session_state.ms.append({"role": "user", "content": "What is having the most impact on my sleep? Analyze my activity vs quality."})
     if st.sidebar.button("Muscle Mass Impact"):
-        st.session_state.ms.append({"role": "user", "content": "Analyze my muscle mass (Weight * (1-Fat%)) vs my protein intake and activity."})
+        st.session_state.ms.append({"role": "user", "content": "Analyze my muscle mass (Weight * (1-Fat%)) trends."})
 
     st.sidebar.markdown("<div class='step-header'>Step 2. Levelling up</div>", unsafe_allow_html=True)
     if st.sidebar.button("🚀 HOW DO I IMPROVE?"):
         if st.session_state.ms:
             t = st.session_state.ms[-1]["content"]
-            st.session_state.ms.append({"role": "user", "content": f"How do I level up results for '{t}'? Give me a 3-step action plan."})
+            st.session_state.ms.append({"role": "user", "content": f"How do I level up results for '{t}'? Give me a specific plan."})
         else: st.sidebar.warning("Analyze a trend first.")
 
     st.sidebar.divider()
     if st.sidebar.button("Logout"):
         st.session_state.tk, st.session_state.cached_data, st.session_state.ms = None, None, []
-        st.query_params.clear()
         st.rerun()
 
     # --- MAIN PAGE ---
@@ -146,27 +147,28 @@ if st.session_state.tk:
             with st.status("Gathering performance metrics...", expanded=True) as status:
                 h = {"Authorization": f"Bearer {st.session_state.tk}"}
                 try:
-                    # Fetching
+                    # Fetching Time-Series
                     s = requests.get("https://api.fitbit.com/1/user/-/activities/steps/date/today/6m.json", headers=h).json().get('activities-steps', [])
                     w = requests.get("https://api.fitbit.com/1/user/-/body/weight/date/today/6m.json", headers=h).json().get('body-weight', [])
                     f = requests.get("https://api.fitbit.com/1/user/-/body/fat/date/today/6m.json", headers=h).json().get('body-fat', [])
                     co = requests.get("https://api.fitbit.com/1/user/-/activities/calories/date/today/6m.json", headers=h).json().get('activities-calories', [])
-                    
-                    # Merge logic that worked in diagnostic
+                    ci = requests.get("https://api.fitbit.com/1/user/-/foods/log/caloriesIn/date/today/6m.json", headers=h).json().get('foods-log-caloriesIn', [])
+
+                    # Weaving Logic
                     master = {}
                     def weave(d_list, label):
                         for x in d_list:
                             d = x.get('dateTime') or x.get('date')
                             if d:
-                                if d not in master: master[d] = {"s":0,"w":0,"f":0,"co":0}
+                                if d not in master: master[d] = {"s":0,"w":0,"f":0,"co":0,"ci":0}
                                 master[d][label] = x.get('value', 0)
 
-                    weave(s,'s'); weave(w,'w'); weave(f,'f'); weave(co,'co')
+                    weave(s,'s'); weave(w,'w'); weave(f,'f'); weave(co,'co'); weave(ci,'ci')
 
-                    rows = ["Date,Steps,Weight,Fat%,CaloriesOut"]
+                    rows = ["Date,Steps,Weight,Fat%,CalOut,CalIn"]
                     for d in sorted(master.keys(), reverse=True):
                         v = master[d]
-                        rows.append(f"{d},{v['s']},{v['w']},{v['f']},{v['co']}")
+                        rows.append(f"{d},{v['s']},{v['w']},{v['f']},{v['co']},{v['ci']}")
 
                     st.session_state.cached_data = "\n".join(rows)
                     status.update(label="✅ Weaving Complete!", state="complete")
@@ -174,14 +176,13 @@ if st.session_state.tk:
                 except Exception as e: st.error(f"Sync failed: {e}")
 
     if st.session_state.cached_data:
-        # Chat History
         for m in st.session_state.ms:
             with st.chat_message(m["role"]): st.markdown(m["content"])
         
         if st.session_state.ms and st.session_state.ms[-1]["role"] == "user":
             if "l_ans" not in st.session_state or st.session_state.l_ans != len(st.session_state.ms):
                 with st.chat_message("assistant"):
-                    with st.spinner("Crunching performance data..."):
+                    with st.spinner("Analyzing performance data..."):
                         ans = ask_ai(st.session_state.cached_data, st.session_state.ms[-1]["content"])
                         st.markdown(ans)
                         st.session_state.ms.append({"role": "assistant", "content": ans})
@@ -194,8 +195,6 @@ if st.session_state.tk:
 else:
     # LANDING PAGE
     st.markdown("<h1 style='text-align: center; margin-top: 10rem; font-size: 4rem; color: #F8FAFC;'>Kinetic Lab</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #94A3B8; font-size: 1.2rem; margin-bottom: 3rem;'>Precision metrics for high-performance health.</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #94A3B8; font-size: 1.2rem; margin-bottom: 3rem;'>Elite performance analytics.</p>", unsafe_allow_html=True)
     auth_url = f"https://www.fitbit.com/oauth2/authorize?response_type=code&client_id={CID}&scope=activity%20heartrate%20nutrition%20profile%20sleep%20weight&redirect_uri={URI}"
     st.markdown(f"<div style='text-align: center;'><a href='{auth_url}' target='_blank' style='background-color: #38BDF8; color: white; padding: 1.2rem 3rem; border-radius: 50px; text-decoration: none; font-weight: 800; box-shadow: 0 10px 30px rgba(56, 189, 248, 0.3);'>CONNECT PERFORMANCE COACH</a></div>", unsafe_allow_html=True)
-
-# --- END OF APP ---
