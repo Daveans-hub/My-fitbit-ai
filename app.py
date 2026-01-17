@@ -2,77 +2,98 @@ import streamlit as st
 import requests
 import base64
 import json
-import pandas as pd
 from datetime import datetime, timedelta
 
 # 1. LOAD SECRETS
 CID, SEC, GKEY, URI = st.secrets["FITBIT_CLIENT_ID"], st.secrets["FITBIT_CLIENT_SECRET"], st.secrets["GEMINI_API_KEY"], st.secrets["YOUR_SITE_URL"]
 
-# 2. OPTIMIZED AI ENGINE
-def ask_ai(ctx_table, q):
+# 2. AUTO-DISCOVERY AI ENGINE
+def ask_ai(ctx, q):
     try:
-        # We target the v1beta endpoint directly for speed and reliability
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GKEY}"
+        # STEP A: Ask Google which models are allowed for this key right now
+        # We try the stable 'v1' first
+        list_url = f"https://generativelanguage.googleapis.com/v1/models?key={GKEY}"
+        model_list = requests.get(list_url).json()
         
-        prompt = f"""
-        You are the Kinetic Lab AI Coach. 
-        Analyze the following 90-day health dataset (CSV format):
-        {ctx_table}
+        # Filter for models that support generating content
+        available = [m['name'] for m in model_list.get('models', []) if 'generateContent' in m.get('supportedGenerationMethods', [])]
         
-        User Request: {q}
+        if not available:
+            return "AI Snag: No models found. Check your API key in Google AI Studio."
+
+        # STEP B: Pick the best available model (Prefer 1.5 Flash, then 1.0 Pro)
+        model_path = next((m for m in available if "1.5-flash" in m), available[0])
         
-        RULES:
-        - Calculate Muscle Mass = Weight * (1 - (Fat% / 100)).
-        - Be highly numeric. Show correlations (r-values if possible).
-        - Provide a 3-step action plan for Step 2.
-        - IGNORE days where Weight or Calories are 0.
-        """
+        # STEP C: Execute using the discovered path
+        gen_url = f"https://generativelanguage.googleapis.com/v1/{model_path}:generateContent?key={GKEY}"
+        
+        prompt = f"You are the Kinetic Lab AI Coach. Data: {ctx}. Request: {q}. Provide numeric trends and a 3-step action plan."
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "safetySettings": [{"category": c, "threshold": "BLOCK_NONE"} for c in ["HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"]]
         }
-        # Increased timeout to 2 minutes for heavy math
-        r = requests.post(url, json=payload, timeout=120)
-        res = r.json()
         
-        if "candidates" in res:
-            return res["candidates"][0]["content"]["parts"][0]["text"]
-        else:
-            return f"AI Snag: {json.dumps(res)}"
-    except Exception as e:
-        return f"System Snag: {str(e)}"
+        r = requests.post(gen_url, json=payload, timeout=90)
+        return r.json()['candidates'][0]['content']['parts'][0]['text']
+    except Exception as e: return f"Coach Snag: {str(e)}"
 
-# 3. HIGH-CONTRAST UI (Pure White Text #FFFFFF)
+# 3. GLOBAL STYLING (Professional Dark + Pure White Text)
 st.set_page_config(page_title="Kinetic Lab", layout="wide")
-st.markdown("""
+
+st.markdown(f"""
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
-        .stApp, [data-testid="stAppViewContainer"] { background-color: #0F172A !important; font-family: 'Inter', sans-serif; }
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&display=swap');
         
-        /* Global White Text Force */
-        html, body, .stMarkdown, p, h1, h2, h3, li, span, label, div, [data-testid="stChatMessage"] p { 
-            color: #FFFFFF !important; 
-        }
+        .stApp {{
+            background-color: #0F172A !important;
+            font-family: 'Inter', sans-serif;
+        }}
 
-        [data-testid="stSidebar"] { 
-            background-color: #1E293B !important; 
-            border-right: 1px solid rgba(255, 255, 255, 0.05); 
-            min-width: 320px !important; 
-        }
+        /* FORCE ALL TEXT TO PURE WHITE */
+        html, body, [class*="css"], .stMarkdown, p, h1, h2, h3, li, span, label, div, [data-testid="stChatMessage"] p {{
+            color: #FFFFFF !important;
+        }}
 
-        .stButton button {
-            width: 100% !important; background: rgba(255, 255, 255, 0.05) !important;
-            backdrop-filter: blur(10px); border: 1px solid rgba(56, 189, 248, 0.4) !important;
-            color: #38BDF8 !important; font-weight: 600 !important; border-radius: 10px !important;
-            text-transform: uppercase !important; height: 3.5em !important; margin-bottom: 8px !important;
-        }
-        .stButton button:hover { background: rgba(56, 189, 248, 0.1) !important; border-color: #38BDF8 !important; }
-        .step-header { font-weight: 800; font-size: 0.85rem; color: #94A3B8 !important; text-transform: uppercase; letter-spacing: 0.05em; margin-top: 2rem; margin-bottom: 0.5rem; }
+        [data-testid="stSidebar"] {{
+            background-color: #1E293B !important;
+            border-right: 1px solid rgba(255, 255, 255, 0.05);
+            min-width: 320px !important;
+        }}
+
+        /* Uniform Buttons & Glassmorphism */
+        .stButton button {{
+            width: 100% !important;
+            display: block !important;
+            background: rgba(255, 255, 255, 0.05) !important;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(56, 189, 248, 0.4) !important;
+            color: #38BDF8 !important;
+            font-weight: 600 !important;
+            border-radius: 10px !important;
+            text-transform: uppercase !important;
+            height: 3.5em !important;
+            margin-bottom: 8px !important;
+        }}
+        
+        .stButton button:hover {{
+            background: rgba(56, 189, 248, 0.1) !important;
+            border-color: #38BDF8 !important;
+        }}
+
+        .step-header {{
+            font-weight: 800;
+            font-size: 0.85rem;
+            color: #F8FAFC !important;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-top: 2rem;
+            margin-bottom: 0.8rem;
+        }}
     </style>
     """, unsafe_allow_html=True)
 
 if "tk" not in st.session_state: st.session_state.tk = None
-if "data" not in st.session_state: st.session_state.data = None
+if "cached_data" not in st.session_state: st.session_state.cached_data = None
 if "ms" not in st.session_state: st.session_state.ms = []
 
 # 4. LOGIN
@@ -89,18 +110,19 @@ if "code" in qp and not st.session_state.tk:
             st.rerun()
     except: st.error("Login failed.")
 
-# 5. MAIN APP
+# 5. MAIN APP (LOGGED IN)
 if st.session_state.tk:
+    # --- SIDEBAR ---
     st.sidebar.markdown("<h2 style='font-weight: 800;'>KINETIC LAB</h2>", unsafe_allow_html=True)
-    st.sidebar.markdown("<div style='color: #2DD4BF; font-weight: 600; font-size: 0.7rem;'>● DATA STREAM ACTIVE</div>", unsafe_allow_html=True)
+    st.sidebar.markdown(f"<div style='color: #2DD4BF; font-weight: 600; font-size: 0.7rem;'>● DATA STREAM ACTIVE</div>", unsafe_allow_html=True)
     
     st.sidebar.markdown("<div class='step-header'>Step 1. Looking at trends</div>", unsafe_allow_html=True)
     if st.sidebar.button("Weight & Fat Impact"):
-        st.session_state.ms.append({"role": "user", "content": "What is having the most impact on my weight and body fat %? Analyze my calories, steps, and fat % trends."})
+        st.session_state.ms.append({"role": "user", "content": "What is having the most impact on my weight and body fat %? Analyze calories, steps, and fat % trends."})
     if st.sidebar.button("Sleep Quality Impact"):
         st.session_state.ms.append({"role": "user", "content": "What is having the most impact on my sleep score? Analyze activity and heart rate."})
     if st.sidebar.button("Muscle Mass Impact"):
-        st.session_state.ms.append({"role": "user", "content": "Analyze my calculated muscle mass trends over the last 90 days."})
+        st.session_state.ms.append({"role": "user", "content": "Analyze my muscle mass (Weight * (1-Fat%)) vs my protein intake and activity."})
 
     st.sidebar.markdown("<div class='step-header'>Step 2. Levelling up</div>", unsafe_allow_html=True)
     if st.sidebar.button("🚀 HOW DO I IMPROVE?"):
@@ -111,53 +133,56 @@ if st.session_state.tk:
 
     st.sidebar.divider()
     if st.sidebar.button("Logout"):
-        st.session_state.tk, st.session_state.data, st.session_state.ms = None, None, []
+        st.session_state.tk, st.session_state.cached_data, st.session_state.ms = None, None, []
         st.query_params.clear()
         st.rerun()
 
-    st.title("🔬 Kinetic Performance Analyst")
+    # --- MAIN PAGE ---
+    st.markdown("<h1 style='letter-spacing: 0.025em;'>Kinetic Performance Analyst</h1>", unsafe_allow_html=True)
 
-    if not st.session_state.data:
-        if st.button("🔄 SYNC & WEAVE 90-DAY DATASET"):
-            with st.status("Gathering vitals...", expanded=True) as status:
+    if not st.session_state.cached_data:
+        st.info("Ready to weave your performance matrix.")
+        if st.button("🔄 SYNC & WEAVE 180-DAY DATASET"):
+            with st.status("Gathering performance metrics...", expanded=True) as status:
                 h = {"Authorization": f"Bearer {st.session_state.tk}"}
                 try:
-                    # Pull 90 days (much faster than 180)
-                    s = requests.get("https://api.fitbit.com/1/user/-/activities/steps/date/today/90d.json", headers=h).json().get('activities-steps', [])
-                    w = requests.get("https://api.fitbit.com/1/user/-/body/weight/date/today/90d.json", headers=h).json().get('body-weight', [])
-                    f = requests.get("https://api.fitbit.com/1/user/-/body/fat/date/today/90d.json", headers=h).json().get('body-fat', [])
-                    ci = requests.get("https://api.fitbit.com/1/user/-/foods/log/caloriesIn/date/today/90d.json", headers=h).json().get('foods-log-caloriesIn', [])
+                    # Fetching
+                    s = requests.get("https://api.fitbit.com/1/user/-/activities/steps/date/today/6m.json", headers=h).json().get('activities-steps', [])
+                    w = requests.get("https://api.fitbit.com/1/user/-/body/weight/date/today/6m.json", headers=h).json().get('body-weight', [])
+                    f = requests.get("https://api.fitbit.com/1/user/-/body/fat/date/today/6m.json", headers=h).json().get('body-fat', [])
+                    co = requests.get("https://api.fitbit.com/1/user/-/activities/calories/date/today/6m.json", headers=h).json().get('activities-calories', [])
                     
+                    # Merge logic that worked in diagnostic
                     master = {}
-                    for x in s:
-                        d = x['dateTime']
-                        master[d] = {"s":x['value'],"w":0,"f":0,"ci":0}
-                    for x in w:
-                        if x['dateTime'] in master: master[x['dateTime']]['w'] = x['value']
-                    for x in f:
-                        if x['dateTime'] in master: master[x['dateTime']]['f'] = x['value']
-                    for x in ci:
-                        if x['dateTime'] in master: master[x['dateTime']]['ci'] = x['value']
+                    def weave(d_list, label):
+                        for x in d_list:
+                            d = x.get('dateTime') or x.get('date')
+                            if d:
+                                if d not in master: master[d] = {"s":0,"w":0,"f":0,"co":0}
+                                master[d][label] = x.get('value', 0)
 
-                    rows = ["Date,Steps,Weight,Fat%,CalIn"]
+                    weave(s,'s'); weave(w,'w'); weave(f,'f'); weave(co,'co')
+
+                    rows = ["Date,Steps,Weight,Fat%,CaloriesOut"]
                     for d in sorted(master.keys(), reverse=True):
                         v = master[d]
-                        rows.append(f"{d},{v['s']},{v['w']},{v['f']},{v['ci']}")
+                        rows.append(f"{d},{v['s']},{v['w']},{v['f']},{v['co']}")
 
-                    st.session_state.data = "\n".join(rows)
-                    status.update(label="✅ Ready!", state="complete")
+                    st.session_state.cached_data = "\n".join(rows)
+                    status.update(label="✅ Weaving Complete!", state="complete")
                     st.rerun()
                 except Exception as e: st.error(f"Sync failed: {e}")
 
-    if st.session_state.data:
+    if st.session_state.cached_data:
+        # Chat History
         for m in st.session_state.ms:
             with st.chat_message(m["role"]): st.markdown(m["content"])
         
         if st.session_state.ms and st.session_state.ms[-1]["role"] == "user":
             if "l_ans" not in st.session_state or st.session_state.l_ans != len(st.session_state.ms):
                 with st.chat_message("assistant"):
-                    with st.spinner("Crunching data... this takes about 30 seconds."):
-                        ans = ask_ai(st.session_state.data, st.session_state.ms[-1]["content"])
+                    with st.spinner("Crunching performance data..."):
+                        ans = ask_ai(st.session_state.cached_data, st.session_state.ms[-1]["content"])
                         st.markdown(ans)
                         st.session_state.ms.append({"role": "assistant", "content": ans})
                         st.session_state.last_ans = len(st.session_state.ms)
@@ -168,8 +193,9 @@ if st.session_state.tk:
 
 else:
     # LANDING PAGE
-    st.markdown("<h1 style='text-align: center; margin-top: 10rem; font-size: 4rem;'>Kinetic Lab</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; margin-top: 10rem; font-size: 4rem; color: #F8FAFC;'>Kinetic Lab</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #94A3B8; font-size: 1.2rem; margin-bottom: 3rem;'>Precision metrics for high-performance health.</p>", unsafe_allow_html=True)
     auth_url = f"https://www.fitbit.com/oauth2/authorize?response_type=code&client_id={CID}&scope=activity%20heartrate%20nutrition%20profile%20sleep%20weight&redirect_uri={URI}"
-    st.markdown(f"<div style='text-align: center;'><a href='{auth_url}' target='_blank' style='background-color: #38BDF8; color: white; padding: 1.2rem 3rem; border-radius: 50px; text-decoration: none; font-weight: 800;'>CONNECT PERFORMANCE COACH</a></div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='text-align: center;'><a href='{auth_url}' target='_blank' style='background-color: #38BDF8; color: white; padding: 1.2rem 3rem; border-radius: 50px; text-decoration: none; font-weight: 800; box-shadow: 0 10px 30px rgba(56, 189, 248, 0.3);'>CONNECT PERFORMANCE COACH</a></div>", unsafe_allow_html=True)
 
 # --- END OF APP ---
